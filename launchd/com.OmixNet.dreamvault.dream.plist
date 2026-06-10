@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DreamVault 夜间 dream 任务调度 (launchd plist)
+
+  安装：
+    # 1. build dream 二进制（首次或更新后）
+    cd <repo> && swift build -c release
+
+    # 2. 改本文件最下方的 "vault" 路径为你本机实际值（默认 /Users/biomatrix/.dreamvault）
+
+    # 3. install 到 ~/Library/LaunchAgents/
+    cp launchd/com.OmixNet.dreamvault.dream.plist ~/Library/LaunchAgents/
+    cp launchd/dream-runner.sh ~/Library/LaunchAgents/   # wrapper 也得能执行
+    chmod +x ~/Library/LaunchAgents/dream-runner.sh
+
+    # 4. 让 launchd 加载（macOS 13+）
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.OmixNet.dreamvault.dream.plist
+
+    # 5. 立即触发一次（看 RunAtLoad 跑得对不对）
+    launchctl kickstart -k gui/$(id -u)/com.OmixNet.dreamvault.dream
+
+    # 6. 验证
+    launchctl list | grep dreamvault
+    tail -f ~/Library/Logs/DreamVault/dream.out.log
+
+  卸载：
+    launchctl bootout gui/$(id -u)/com.OmixNet.dreamvault.dream.plist
+    rm ~/Library/LaunchAgents/com.OmixNet.dreamvault.dream.plist
+    rm ~/Library/LaunchAgents/dream-runner.sh
+
+  设计说明（为什么这么写）：
+  - Label: com.OmixNet.dreamvault.dream（反 DNS；全 macOS 全局唯一）
+  - StartCalendarInterval: 每晚 3:00 跑（避开晚高峰，本机通常醒着/充电）
+  - RunAtLoad: true：装上立刻跑一次（首装验证 plist 工作）
+  - KeepAlive: false：跑完就退（这是定时任务不是守护进程）
+  - ProgramArguments 调 wrapper 脚本而不是 dream binary 本身 —— wrapper
+    负责：找 release/debug 二进制、设 PATH（Xcode toolchain）、设环境变量
+  - ProcessType=Background + Nice=10：低优先级，不抢前台资源
+  - StandardOutPath/StandardErrorPath: 每次跑 append 到日志，路径在
+    ~/Library/Logs/DreamVault/（macOS 推荐位置）
+  - 不写 git push：vault 本身是 git repo，dream 内已经 commit
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.OmixNet.dreamvault.dream</string>
+
+    <!-- 每天 3:00 跑一次 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- 装上立刻跑一次（验证 plist 工作） -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- 跑完就退 -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>Nice</key>
+    <integer>10</integer>
+
+    <!-- 调 wrapper 而不是直接调 dream binary -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/biomatrix/Library/LaunchAgents/dream-runner.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!--
+          launchd 启动的服务拿到的 PATH 是精简版，显式提供：
+            - XcodeDefault toolchain（让 swift / git 等能找到）
+            - Homebrew（opt + usr/local）
+            - 基础系统路径
+          wrapper 内会重写一次 PATH（含 Xcode toolchain），这里写一份兜底
+        -->
+        <key>PATH</key>
+        <string>/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>DREAMVAULT_LLM</key>
+        <string>ollama</string>
+        <!-- ↓ 改这里改 vault 路径（用户级） ↓ -->
+        <key>DREAMVAULT_VAULT</key>
+        <string>/Users/biomatrix/.dreamvault</string>
+    </dict>
+
+    <!-- 日志路径在 ~/Library/Logs/DreamVault/（macOS 推荐位置） -->
+    <key>StandardOutPath</key>
+    <string>/Users/biomatrix/Library/Logs/DreamVault/dream.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/biomatrix/Library/Logs/DreamVault/dream.err.log</string>
+
+    <!-- 进程资源限制（防止 dream 跑飞） -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>1024</integer>
+    </dict>
+</dict>
+</plist>
