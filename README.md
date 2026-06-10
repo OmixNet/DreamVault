@@ -87,8 +87,28 @@ dream version
 ## 下一步（体力活，外壳方向）
 
 1. **SwiftUI 外壳** — VaultBrowser（文件树 + wiki 浏览） / Editor（raw 模式锁定） / DreamPanel（看 dream-report、手动触发、回滚）
-2. **launchd plist 夜间调度** — 调起 `dream run --vault ~/MyVault` 每晚 3:00 跑
-3. **生产调参** — 用真实 raw 日志跑 2 周，盯 dream-report 调 `DecayConfig`（默认权重 0.5/0.3/0.2、τ 30 天、阈值 0.15、staleDays 90 都是起点）
+2. **生产调参** — 用真实 raw 日志跑 2 周，盯 dream-report 调 `DecayConfig`（默认权重 0.5/0.3/0.2、τ 30 天、阈值 0.15、staleDays 90 都是起点）
+
+## 夜间调度（launchd 已实现）
+
+`launchd/com.OmixNet.dreamvault.dream.plist` + `launchd/dream-runner.sh` + `scripts/install.sh` 配套。
+
+```bash
+# 全新机器上一键装好
+bash scripts/install.sh
+
+# 立即触发一次（验证 plist 工作）
+launchctl kickstart -k gui/$(id -u)/com.OmixNet.dreamvault.dream
+
+# 看日志
+tail -f ~/Library/Logs/DreamVault/dream.out.log
+
+# 卸
+bash scripts/uninstall.sh            # 保留 vault
+bash scripts/uninstall.sh --purge   # 全清
+```
+
+定时器：每天 3:00 跑一次。RunAtLoad=true 装上立刻跑一次（首装验证）。
 
 ## 仓库
 
