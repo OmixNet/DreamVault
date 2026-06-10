@@ -8,13 +8,22 @@
 
 | 项目 | 许可证 | 能不能碰源码 | 能不能学思想 |
 |------|--------|-------------|-------------|
-| nashsu/llm_wiki | **GPL** | ❌ 绝不照抄（会传染你的项目） | ✅ 读 README/架构 |
-| rohitg00/agentmemory | 设计文档公开(LLM Wiki v2) | ⚠️ 只读思想 | ✅ |
-| JordanMcCann/agentmemory | MIT | ✅ 相对自由 | ✅ |
-| archon-memory-core | 本地优先项目 | ⚠️ 先核实 LICENSE | ✅ |
+| nashsu/llm_wiki | **GPL-3.0** | ❌ 绝不照抄（会传染你的项目） | ✅ 读 README/架构 |
+| rohitg00/agentmemory | **Apache-2.0** | ⚠️ 只读思想，**不直接搬代码** | ✅ 强烈推荐 |
+| ~~JordanMcCann/agentmemory~~ | — | ❌ 仓库已不存在 | — |
+| ~~archon-memory-core~~ | — | ❌ 实际是 archon（AI 编码工作流引擎），不是记忆库 | — |
 
-**警告：有多个同名 agentmemory 项目，许可证不同，认准 URL。**
-方针：一律只借鉴算法思想，用 Swift 原生重写。即便 MIT 项目也只学思想，保持代码干净、零传染、纯原生。
+**2026-06 修正**：本节原列的 "JordanMcCann/agentmemory" 和 "archon-memory-core" 是误记或仓库已转手 / 删库。
+真正值得学的三个项目是：
+
+- **[Karpathy/llm-wiki gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)** — 思想源头（不是 GitHub repo，是个 gist 文档）
+- **nashsu/llm_wiki** — GPL v3 桌面实装（看 README / 架构）
+- **rohitg00/agentmemory** — Apache-2.0 Agent 记忆层生产级实装（看 `README.md` / `DESIGN.md`）
+
+详见 `docs/LEARNED_ALGORITHMS.md` 的完整对照表。
+
+**警告：同名 `agentmemory` 至少 4 个（rohitg00 / conversence / elizaOS / langchain-ai/memory-agent），认准 URL。**
+方针：一律只借鉴算法思想，用 Swift 原生重写。即便 MIT/Apache 项目也只学思想，保持代码干净、零传染、纯原生。
 
 ---
 
