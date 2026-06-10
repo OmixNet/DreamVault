@@ -5,17 +5,42 @@ macOS 原生 Markdown 知识库 + dream 夜间记忆整理。本仓库是**内�
 ## 跑起来
 
 ```bash
+export PATH="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin:$PATH"
 swift test
 ```
 
-跑全套单元测试 + 集成测试：**25/25 通过**（Decayer 6 / Consolidator 4 / ContradictionDetector 3 / Redactor 5 / DreamCycle 7）。
+跑全套单元测试 + 集成测试：**51/51 通过**（Decayer 6 / Consolidator 4 + 14 / ContradictionDetector 3 / Redactor 5 / DreamCycle 7 / DreamCLI 11）。
 
-> **环境提示**：本机若 `swift` driver spawn 子命令失败（找不到 `swift-test` 等），需把 Xcode toolchain 加进 PATH：
-> `export PATH="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin:$PATH"`
->
+> **环境提示**：本机若 `swift` driver spawn 子命令失败（找不到 `swift-test` 等），需把 Xcode toolchain 加进 PATH。
 > 这是因为 `/usr/bin/swift`（Apple CLT）只是个 multi-call driver，真正的 `swift-test` / `swift-build` 在 Xcode toolchain 里。
 
-## 已实现（DreamEngine 库 — 9 个源文件）
+## dream CLI
+
+`Package.swift` 暴露了 executable `dream`：
+
+```bash
+swift build
+.build/arm64-apple-macosx/debug/dream help
+```
+
+子命令：
+
+```bash
+dream run     --vault ~/MyVault [--dry-run]      # 跑一次 dream（五步）
+dream report  --vault ~/MyVault [--last N]        # 列出最近 N 份 dream-report
+dream status  --vault ~/MyVault                  # raw 候选 + ledger 三态 + 最近 report
+dream rollback --vault ~/MyVault                 # git revert HEAD
+dream help
+dream version
+```
+
+全局：`--vault <path>` / `--llm {mock|ollama}` / `--verbose`
+
+环境变量：`DREAMVAULT_LLM=mock|ollama`（默认 mock）、`DREAMVAULT_VAULT`（默认 `~/.dreamvault`）、`OLLAMA_BASE_URL`、`OLLAMA_MODEL`
+
+退出码：`0=成功 1=用户错 2=dream 阶段失败 3=git 失败`
+
+## 已实现（DreamEngine 库 + dream CLI）
 
 ### 核心模型
 - `Models.swift` — `Memory` / `SourceRef` / `Ledger` / `MemoryStatus` / `DecayClass` 数据模型，附自定义解码兼容旧 ledger
@@ -28,7 +53,10 @@ swift test
   - archived 状态不会再次降级
 
 ### 整合防幻觉（架构文档第 5 节，硬骨头之二）
-- `Consolidator.swift` — 四道闸：① 脱敏 ② 强制引用 ③ LLM 回读校验（必须 YES）④ 独立源数 ≥2 才升 durable
+- `Consolidator.swift` — 两段或三段流水线：
+  - **2 段**（默认 / 快速）：① 脱敏 ② LLM 一步产出候选 + verify 回读校验（必须 YES）③ 独立源数 ≥2 才升 durable
+  - **3 段**（Three-Step CoT，生产推荐）：① 脱敏 ② **analyze** LLM 思考输出结构化 JSON（key entities / 矛盾候选 / 推荐教训）③ **generate** LLM 基于分析产 0..N 个 MemoryDraft ④ 强制 source 真实性闸 + verify 回读
+  - 3 段任一失败可 fallback 到 2 段
 - `ContradictionDetector.swift` — 写时矛盾检测 + 双向建链，**不删任何一方**，交人工裁决
 - `Redactor.swift` — 写入前隐私脱敏，中英文全覆盖（API key / Bearer / AWS / GitHub token / private key block / 邮箱 / **CN 手机号** / **CN 身份证** / US 电话 / 信用卡 / IPv4）
 
@@ -44,6 +72,11 @@ swift test
   - `MockLLMProvider` — 零依赖 mock，按 prompt 关键字返回 YES/NO/CONFLICT，供测试与本地离线跑通
   - `OllamaProvider` — 真本地 Ollama（`http://127.0.0.1:11434/v1/chat/completions` OpenAI 兼容），纯 URLSession 无 SDK 依赖
   - `LLMFactory.fromEnvironment()` — 读 `DREAMVAULT_LLM={mock|ollama}` + 可选 `OLLAMA_BASE_URL` / `OLLAMA_MODEL` 覆盖
+- `GlobalOptions.swift` — CLI 参数解析（移到库中方便 tests 测），支持 `--vault` / `--llm` / `--verbose` 在子命令前/后
+
+### CLI
+- `Sources/dream/main.swift` — `@main struct DreamCLI` 4 个子命令 + help / version
+- 退出码语义化（0/1/2/3）便于 launchd / 调度器判断结果
 
 ## 文档
 
@@ -54,9 +87,8 @@ swift test
 ## 下一步（体力活，外壳方向）
 
 1. **SwiftUI 外壳** — VaultBrowser（文件树 + wiki 浏览） / Editor（raw 模式锁定） / DreamPanel（看 dream-report、手动触发、回滚）
-2. **launchd plist 夜间调度** — 调起 `DreamCycle.runOnce()`
-3. **CLI 入口** — 一个 `dream` 命令行二进制（不在 Package.swift products 里，单独 target；用 `LLMFactory.fromEnvironment()` 选 provider；带 `--dry-run` 标志）
-4. **生产调参** — 用真实 raw 日志跑 2 周，盯 dream-report 调 `DecayConfig`（默认权重 0.5/0.3/0.2、τ 30 天、阈值 0.15、staleDays 90 都是起点）
+2. **launchd plist 夜间调度** — 调起 `dream run --vault ~/MyVault` 每晚 3:00 跑
+3. **生产调参** — 用真实 raw 日志跑 2 周，盯 dream-report 调 `DecayConfig`（默认权重 0.5/0.3/0.2、τ 30 天、阈值 0.15、staleDays 90 都是起点）
 
 ## 仓库
 
