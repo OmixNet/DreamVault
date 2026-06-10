@@ -1,0 +1,20 @@
+# Build
+.build/
+.swiftpm/
+*.xcodeproj/
+DerivedData/
+
+# opencode runtime
+.opencode/
+
+# macOS
+.DS_Store
+
+# editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# DreamEngine自身产物（库产物不应入库）
+Package.resolved

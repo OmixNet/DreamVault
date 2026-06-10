@@ -1,0 +1,325 @@
+import Foundation
+
+/// dream 第 4 步：把整合与衰减的结果写回 vault。
+///
+/// 职责（对应架构第 3 节 Persist + llm_wiki 的"增量编译"思想）：
+/// 1. durable 教训**增量合并**进 MEMORY.md——按 memory id 锚点更新/新增/移除，
+///    不是追加；引擎只动 `dream:begin/end` 标记之间的托管区，区外内容不碰。
+/// 2. 为 durable 记忆维护 wiki 页（wiki/concepts/），用 KnowledgeGraph 的
+///    Adamic-Adar 打分生成"相关 [[links]]"，并回写 inboundLinks。
+/// 3. 被衰减降级的记忆移入 wiki/archive/（写归档页、删 concepts 页），不删内容。
+/// 4. 产出 dream-report.md 到 .dream/reports/，并持久化 .dream/ledger.json。
+/// 5. 若注入了 GitRunner，最后整体 commit（git 是事务边界）。
+public struct Persister {
+
+    public let vaultRoot: URL
+    /// 注入则 persist 末尾自动 commit；DreamCycle 注入它并在外层做失败回滚
+    public let git: GitRunner?
+
+    public init(vaultRoot: URL, git: GitRunner? = nil) {
+        self.vaultRoot = vaultRoot
+        self.git = git
+    }
+
+    // MARK: - 输入 / 产物
+
+    public struct Input {
+        /// 合并完成的完整账本（含新教训与建好的矛盾链接），Persister 在其上应用衰减动作
+        public var ledger: Ledger
+        public var decayResults: [DecayResult]
+        /// 本次整合通过的新教训（报告用）
+        public var newlyAccepted: [Memory]
+        /// 本次收集过的 raw 相对路径（commit 成功即视为 processed）
+        public var gatheredFiles: [String]
+        public var now: Date
+
+        public init(ledger: Ledger, decayResults: [DecayResult] = [],
+                    newlyAccepted: [Memory] = [], gatheredFiles: [String] = [],
+                    now: Date = Date()) {
+            self.ledger = ledger; self.decayResults = decayResults
+            self.newlyAccepted = newlyAccepted; self.gatheredFiles = gatheredFiles
+            self.now = now
+        }
+    }
+
+    public struct Outcome {
+        public let memoryMdPath: String
+        public let reportPath: String
+        public let wikiPagesWritten: [String]
+        public let archivedIDs: [String]
+        public let needsReviewIDs: [String]
+        /// persist 后的最终账本（状态已更新、inboundLinks 已回写）
+        public let ledger: Ledger
+        /// 是否产生了 git commit（注入 GitRunner 且有变更时为 true）
+        public let committed: Bool
+    }
+
+    // MARK: - 主入口
+
+    public func persist(_ input: Input) throws -> Outcome {
+        var ledger = input.ledger
+
+        // 1. 应用衰减动作：archive → 降级（绝不物理删除）；needsReview 只记录、交人工
+        let actionByID = Dictionary(uniqueKeysWithValues: input.decayResults.map { ($0.memoryID, $0.action) })
+        var archivedIDs: [String] = []
+        var needsReviewIDs: [String] = []
+        for i in ledger.memories.indices {
+            switch actionByID[ledger.memories[i].id] {
+            case .archive:
+                ledger.memories[i].status = .archived
+                archivedIDs.append(ledger.memories[i].id)
+            case .needsReview:
+                needsReviewIDs.append(ledger.memories[i].id)
+            default: break
+            }
+        }
+
+        // 2. 知识图谱：非归档记忆参与建图（来源重叠连边），算相关链接
+        let active = ledger.memories.filter { $0.status != .archived }
+        let graph = KnowledgeGraph(memories: active)
+        var relatedByID: [String: [(id: String, score: Double)]] = [:]
+        var inbound: [String: Int] = [:]
+        for m in active {
+            let related = graph.topRelated(to: m.id, limit: 5)
+            relatedByID[m.id] = related
+            for r in related { inbound[r.id, default: 0] += 1 }
+        }
+        for i in ledger.memories.indices {
+            ledger.memories[i].inboundLinks = inbound[ledger.memories[i].id] ?? 0
+        }
+
+        // 3. wiki 页：durable 写 concepts；本次归档的写 archive 并删 concepts 页
+        var wikiWritten: [String] = []
+        let textByID = Dictionary(uniqueKeysWithValues: ledger.memories.map { ($0.id, $0.text) })
+        for m in ledger.memories where m.status == .durable {
+            let rel = "wiki/concepts/\(m.id).md"
+            try write(wikiPage(for: m, related: relatedByID[m.id] ?? [], textByID: textByID,
+                               now: input.now), to: rel)
+            wikiWritten.append(rel)
+        }
+        for m in ledger.memories where archivedIDs.contains(m.id) {
+            let rel = "wiki/archive/\(m.id).md"
+            try write(archivePage(for: m, now: input.now), to: rel)
+            wikiWritten.append(rel)
+            let concepts = vaultRoot.appendingPathComponent("wiki/concepts/\(m.id).md")
+            try? FileManager.default.removeItem(at: concepts)
+        }
+
+        // 4. MEMORY.md 增量合并（非追加）
+        let durables = ledger.memories.filter { $0.status == .durable }
+        let memoryMdRel = "MEMORY.md"
+        let merged = Self.mergeMemoryMd(
+            existing: (try? String(contentsOf: vaultRoot.appendingPathComponent(memoryMdRel),
+                                   encoding: .utf8)),
+            durables: durables)
+        try write(merged, to: memoryMdRel)
+
+        // 5. ledger + processed 登记 + dream-report
+        try Self.saveLedger(ledger, vaultRoot: vaultRoot)
+        if !input.gatheredFiles.isEmpty {
+            var registry = Gatherer.loadProcessedRegistry(vaultRoot: vaultRoot)
+            registry.formUnion(input.gatheredFiles)
+            try Gatherer.saveProcessedRegistry(registry, vaultRoot: vaultRoot)
+        }
+        let reportRel = ".dream/reports/dream-report-\(Self.stamp(input.now)).md"
+        try write(report(input: input, archivedIDs: archivedIDs,
+                         needsReviewIDs: needsReviewIDs, durableCount: durables.count),
+                  to: reportRel)
+
+        // 6. 注入了 GitRunner 则整体提交
+        var committed = false
+        if let git {
+            committed = try git.commitAll(
+                message: "dream: \(Self.stamp(input.now)) gathered=\(input.gatheredFiles.count) "
+                       + "accepted=\(input.newlyAccepted.count) archived=\(archivedIDs.count)")
+        }
+
+        return Outcome(memoryMdPath: vaultRoot.appendingPathComponent(memoryMdRel).path,
+                       reportPath: vaultRoot.appendingPathComponent(reportRel).path,
+                       wikiPagesWritten: wikiWritten,
+                       archivedIDs: archivedIDs,
+                       needsReviewIDs: needsReviewIDs,
+                       ledger: ledger,
+                       committed: committed)
+    }
+
+    // MARK: - MEMORY.md 增量合并
+
+    static let beginMark = "<!-- dream:begin -->"
+    static let endMark = "<!-- dream:end -->"
+
+    /// 把 durable 教训合并进 MEMORY.md 的托管区：
+    /// - 已存在的 id：保持原有顺序，内容以最新为准（更新而非重复追加）
+    /// - 新 id：追加到托管区末尾
+    /// - 不再 durable 的 id：从托管区移除（已归档/降级）
+    /// - 托管区之外的内容（用户手写部分）原样保留
+    static func mergeMemoryMd(existing: String?, durables: [Memory]) -> String {
+        let durableByID = Dictionary(uniqueKeysWithValues: durables.map { ($0.id, $0) })
+
+        // 现有托管区中的 id 顺序
+        var orderedIDs: [String] = []
+        var head = "# MEMORY\n\n> 托管区（dream:begin/end 之间）由 DreamEngine 增量维护，请勿手改；区外内容随意。\n\n"
+        var tail = "\n"
+        if let existing,
+           let beginRange = existing.range(of: beginMark),
+           let endRange = existing.range(of: endMark, range: beginRange.upperBound..<existing.endIndex) {
+            head = String(existing[..<beginRange.lowerBound])
+            tail = String(existing[endRange.upperBound...])
+            let block = String(existing[beginRange.upperBound..<endRange.lowerBound])
+            for line in block.components(separatedBy: "\n") {
+                if let id = extractMemoryID(line) { orderedIDs.append(id) }
+            }
+        } else if let existing {
+            // 已有文件但无托管区：保留全文，把托管区接在末尾
+            head = existing.hasSuffix("\n") ? existing + "\n" : existing + "\n\n"
+            tail = "\n"
+        }
+
+        var finalIDs = orderedIDs.filter { durableByID[$0] != nil }       // 移除不再 durable 的
+        for m in durables where !finalIDs.contains(m.id) { finalIDs.append(m.id) }  // 新增的追加
+
+        let lines = finalIDs.compactMap { durableByID[$0].map(renderMemoryLine) }
+        let block = ([beginMark] + lines + [endMark]).joined(separator: "\n")
+        return head + block + tail
+    }
+
+    /// 一条 durable 教训在 MEMORY.md 中的渲染：单行 bullet + 来源 + id 锚点
+    static func renderMemoryLine(_ m: Memory) -> String {
+        let text = m.text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        let srcs = m.sources.map { "\($0.file):\($0.line)" }.joined(separator: ", ")
+        return "- \(text) — 来源: \(srcs) <!-- memory:\(m.id) -->"
+    }
+
+    static func extractMemoryID(_ line: String) -> String? {
+        guard let r = line.range(of: #"<!-- memory:([^ ]+) -->"#, options: .regularExpression)
+        else { return nil }
+        return String(line[r].dropFirst("<!-- memory:".count).dropLast(" -->".count))
+    }
+
+    // MARK: - wiki 页渲染
+
+    func wikiPage(for m: Memory, related: [(id: String, score: Double)],
+                  textByID: [String: String], now: Date) -> String {
+        var out = """
+        ---
+        memory: \(m.id)
+        status: \(m.status.rawValue)
+        decayClass: \(m.decayClass.rawValue)
+        updated: \(Self.stamp(now))
+        ---
+
+        # \(String(m.text.replacingOccurrences(of: "\n", with: " ").prefix(60)))
+
+        \(m.text)
+
+        ## 来源
+        \(m.sources.map { "- \($0.file):\($0.line) — \($0.excerpt)" }.joined(separator: "\n"))
+        """
+        if !related.isEmpty {
+            out += "\n\n## 相关\n"
+            out += related.map { r in
+                let hint = textByID[r.id].map { String($0.prefix(40)) } ?? ""
+                return "- [[\(r.id)]] (AA \(String(format: "%.2f", r.score))) \(hint)"
+            }.joined(separator: "\n")
+        }
+        if !m.contradicts.isEmpty {
+            out += "\n\n## 矛盾（待人工裁决）\n"
+            out += m.contradicts.map { "- contradicts:: [[\($0)]]" }.joined(separator: "\n")
+        }
+        return out + "\n"
+    }
+
+    func archivePage(for m: Memory, now: Date) -> String {
+        """
+        ---
+        memory: \(m.id)
+        status: archived
+        archivedAt: \(Self.stamp(now))
+        ---
+
+        # [已归档] \(String(m.text.replacingOccurrences(of: "\n", with: " ").prefix(60)))
+
+        \(m.text)
+
+        ## 来源
+        \(m.sources.map { "- \($0.file):\($0.line)" }.joined(separator: "\n"))
+
+        > 因显著度衰减被降级，未删除；可 grep、可在 git 历史找回。
+        """
+    }
+
+    // MARK: - dream-report
+
+    func report(input: Input, archivedIDs: [String], needsReviewIDs: [String],
+                durableCount: Int) -> String {
+        let accepted = input.newlyAccepted
+        var out = """
+        # Dream Report — \(Self.stamp(input.now))
+
+        ## 概览
+        - 收集 raw 文件: \(input.gatheredFiles.count)
+        - 新教训通过整合: \(accepted.count)（durable \(accepted.filter { $0.status == .durable }.count) / candidate \(accepted.filter { $0.status == .candidate }.count)）
+        - 本次归档(降级): \(archivedIDs.count)
+        - 待人工裁决(矛盾): \(needsReviewIDs.count)
+        - MEMORY.md 当前 durable 总数: \(durableCount)
+        """
+        if !input.gatheredFiles.isEmpty {
+            out += "\n\n## 收集\n" + input.gatheredFiles.map { "- \($0)" }.joined(separator: "\n")
+        }
+        if !accepted.isEmpty {
+            out += "\n\n## 新教训\n" + accepted.map {
+                "- [\($0.status.rawValue)] \(String($0.text.replacingOccurrences(of: "\n", with: " ").prefix(80))) <!-- memory:\($0.id) -->"
+            }.joined(separator: "\n")
+        }
+        if !archivedIDs.isEmpty {
+            out += "\n\n## 归档\n" + archivedIDs.map { "- [[\($0)]] → wiki/archive/" }.joined(separator: "\n")
+        }
+        if !needsReviewIDs.isEmpty {
+            out += "\n\n## 待裁决\n" + needsReviewIDs.map { "- [[\($0)]] 存在矛盾链接" }.joined(separator: "\n")
+        }
+        return out + "\n"
+    }
+
+    // MARK: - ledger 读写（.dream/ledger.json，ISO8601 日期，便于人读与 diff）
+
+    public static func ledgerURL(vaultRoot: URL) -> URL {
+        vaultRoot.appendingPathComponent(".dream/ledger.json")
+    }
+
+    public static func loadLedger(vaultRoot: URL) -> Ledger {
+        let url = ledgerURL(vaultRoot: vaultRoot)
+        guard let data = try? Data(contentsOf: url) else { return Ledger() }
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        return (try? dec.decode(Ledger.self, from: data)) ?? Ledger()
+    }
+
+    public static func saveLedger(_ ledger: Ledger, vaultRoot: URL) throws {
+        let url = ledgerURL(vaultRoot: vaultRoot)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .iso8601
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try enc.encode(ledger).write(to: url)
+    }
+
+    // MARK: - 工具
+
+    static func stamp(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd-HHmmss"
+        f.timeZone = TimeZone.current
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f.string(from: date)
+    }
+
+    private func write(_ content: String, to relPath: String) throws {
+        let url = vaultRoot.appendingPathComponent(relPath)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try content.write(to: url, atomically: true, encoding: .utf8)
+    }
+}
