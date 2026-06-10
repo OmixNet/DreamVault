@@ -31,11 +31,15 @@ public final class MockLLMProvider: LLMProvider {
     /// 这是为了让现有 `EngineTests.swift` 里手写的 Memory 能跑通：
     ///   "should use AppKit" → CONFLICT（被 existing "use SwiftUI" 触发）
     ///   "use jose" → 不命中 NO/CONFLICT → OK
+    ///
+    /// 注意：关键字要够"信号化"，不能太通用，否则会误伤端到端测试
+    /// （"测试"是中文高频词，几乎任何 prompt 都命中 → OK → verify 失败）。
+    /// 现状：仅 `appkit`（矛盾信号）和 `halluc`/`无依据`（幻觉信号）触发非 YES。
+    /// OK 路径当前不命中，保留供未来扩展。
     public static let defaultHandler: Handler = { _, user in
         let lower = user.lowercased()
         if lower.contains("halluc") || lower.contains("无依据") { return "NO" }
         if lower.contains("appkit") { return "CONFLICT" }
-        if lower.contains("测试") || lower.contains("test") || lower.contains("not relevant") { return "OK" }
         return "YES"
     }
 }
