@@ -67,13 +67,19 @@ public struct KnowledgeGraph: Equatable {
 
     /// 与 id 关联最强的前 limit 个节点（按 Adamic-Adar 降序，分数 0 的不返回）。
     /// 用于 Persister 在 wiki 页生成"相关 [[links]]"。
+    /// 注意：用 for 循环而非链式闭包 ——Swift 6.3 类型推导拒绝过深的链式表达式。
     public func topRelated(to id: String, limit: Int = 5) -> [(id: String, score: Double)] {
-        nodes
-            .filter { $0 != id }
-            .map { (id: $0, score: adamicAdar(id, $0)) }
-            .filter { $0.score > 0 }
-            .sorted { $0.score == $1.score ? $0.id < $1.id : $0.score > $1.score }
-            .prefix(limit)
-            .map { $0 }
+        var scored: [(id: String, score: Double)] = []
+        scored.reserveCapacity(nodes.count)
+        for other in nodes where other != id {
+            let s = adamicAdar(id, other)
+            if s > 0 { scored.append((id: other, score: s)) }
+        }
+        scored.sort { lhs, rhs in
+            if lhs.score == rhs.score { return lhs.id < rhs.id }
+            return lhs.score > rhs.score
+        }
+        if scored.count > limit { scored.removeLast(scored.count - limit) }
+        return scored
     }
 }
