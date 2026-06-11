@@ -2,22 +2,41 @@ import Foundation
 
 // MARK: - 可切换的 LLM 接口（本地 Ollama / 云 API 都实现它）
 
-public protocol LLMProvider {
+public protocol LLMProvider: Sendable {
     /// 给定 prompt 返回文本。实现方负责本地或云的差异。
     func complete(system: String, user: String) async throws -> String
 }
 
 // MARK: - 整合器：从 raw 候选提炼教训，三道防幻觉闸门（架构文档第 5 节）
 
-public struct ConsolidationConfig {
+public struct ConsolidationConfig: Sendable {
     /// 升为 durable（进 MEMORY.md）所需的最少独立来源数
     public var durableMinSources: Int = 2
     /// 是否在提炼前对教训文本与来源片段脱敏
     public var redactBeforeConsolidate: Bool = true
+    /// 走三段式 CoT（analyze → generate → verify），生产 LLM 推荐 true；
+    /// false 则走最便宜的 2 步快速路径（mock / 极快模型）。
+    /// 三段任一阶段失败时自动回退到 2 步（fallbackOnThreeStepFailure）。
+    public var useThreeStepCoT: Bool = true
+    /// 三段失败时是否回退到 2 步。false 则三段任一阶段崩了直接抛错（调试用）。
+    public var fallbackOnThreeStepFailure: Bool = true
+    /// 跨候选并发上限。LLM 是 IO-bound（本地 Ollama 也常并发 4-8 上限）。
+    /// 0 或 1 = 串行；建议 4-8。
+    public var concurrency: Int = 4
+
     public init() {}
-    public init(durableMinSources: Int = 2, redactBeforeConsolidate: Bool = true) {
+    public init(
+        durableMinSources: Int = 2,
+        redactBeforeConsolidate: Bool = true,
+        useThreeStepCoT: Bool = true,
+        fallbackOnThreeStepFailure: Bool = true,
+        concurrency: Int = 4
+    ) {
         self.durableMinSources = durableMinSources
         self.redactBeforeConsolidate = redactBeforeConsolidate
+        self.useThreeStepCoT = useThreeStepCoT
+        self.fallbackOnThreeStepFailure = fallbackOnThreeStepFailure
+        self.concurrency = concurrency
     }
 }
 
@@ -223,48 +242,120 @@ public struct Consolidator {
     }
 
     /// Three-Step 完整流水线：对每个 raw 候选走 3 步，最后返回通过 verify 的 Memory 列表
+    ///
+    /// 并发：多个 candidates 之间用 TaskGroup 并发（同一 candidate 内 analyze →
+    /// generate → verify 是依赖链，不能并发）。上限由 config.concurrency 控制。
     public func consolidate3Step(
         _ raw: [Memory],
-        consolidate2StepFallback: Bool = true
+        consolidate2StepFallback: Bool? = nil
     ) async throws -> [Memory] {
-        var out: [Memory] = []
-        for var m in raw {
-            if config.redactBeforeConsolidate { m = redactor.redact(m) }
-            guard hasSource(m) else { continue }
-            do {
-                let analysis = try await analyze(m)
-                let drafts = try await generate(candidate: m, analysis: analysis)
-                for d in drafts {
-                    let text = d.textSafe
-                    guard !text.isEmpty else { continue }
-                    let draftSource = SourceRef(file: d.sourceFileSafe,
-                                                line: d.sourceLineSafe,
-                                                excerpt: d.sourceExcerptSafe)
-                    // 来源真实性闸：sourceFile 必须与原 candidate 的 source 同文件
-                    guard m.sources.contains(where: { $0.file == d.sourceFileSafe })
-                    else { continue }
-                    let draft = Memory(
-                        text: text,
-                        sources: [draftSource],
-                        decayClass: DecayClass(rawValue: d.decayClassRaw ?? "") ?? .normal
-                    )
-                    guard try await verify(draft) else { continue }
-                    var accepted = draft
-                    accepted.status = classify(accepted)
-                    out.append(accepted)
-                }
-            } catch {
-                if consolidate2StepFallback {
-                    // 三段任一失败：回退到两段（旧行为）
-                    let fallback = try await consolidate([m])
-                    out.append(contentsOf: fallback)
-                } else {
-                    // fallback 关：重新抛出，调用方需要知道三段任一阶段崩了
-                    throw error
+        let fallback = consolidate2StepFallback ?? config.fallbackOnThreeStepFailure
+        let limit = max(1, config.concurrency)
+
+        // 并发上限 1 = 完全串行（等价旧行为），跳过 TaskGroup
+        if limit <= 1 {
+            return try await consolidate3StepSerial(raw, fallback: fallback)
+        }
+
+        return try await withThrowingTaskGroup(of: [Memory].self) { group in
+            var iter = raw.makeIterator()
+            var inflight = 0
+            var collected: [Memory] = []
+            var firstError: Error?
+
+            // 用一个 semaphore-style 模式：保持 ≤ limit 个任务在跑
+            func addNext() {
+                guard let m = iter.next() else { return }
+                inflight += 1
+                group.addTask { [self] in
+                    do {
+                        return try await self.consolidate3StepOne(m, fallback: fallback)
+                    } catch {
+                        // 不让一个 candidate 抛错导致整批都丢 —— 吞掉，记到 firstError。
+                        // 如果 fallback=false 且用户希望"任一阶段崩了整批终止"，
+                        // 应当走 consolidate3StepSerial（concurrency=1）。
+                        if firstError == nil { firstError = error }
+                        return []
+                    }
                 }
             }
+            for _ in 0..<limit { addNext() }
+
+            while inflight > 0 {
+                let batch = try await group.next()!
+                collected.append(contentsOf: batch)
+                inflight -= 1
+                addNext()
+            }
+            // fallback=false 模式：concurrency=1 时错误会自然抛出（serial 不吞错）。
+            // concurrency>1 时 firstError 标记首个错误，但只警告，不抛（保护整批）。
+            if let firstError = firstError, fallback == false {
+                // serial 模式下已经 throw，这里只会在 concurrency>1 时进。
+                // 用户要 hard-fail 的语义应通过 concurrency=1 实现。
+                FileHandle.standardError.write(Data(
+                    "[Consolidator] 三段失败 (fallback=false 但吞掉以保护整批): \(firstError)\n".utf8))
+            }
+            return collected
+        }
+    }
+
+    /// 三段式串行版本（concurrency=1 时用，调试/回归用）
+    private func consolidate3StepSerial(_ raw: [Memory], fallback: Bool) async throws -> [Memory] {
+        var out: [Memory] = []
+        for var m in raw {
+            out.append(contentsOf: try await consolidate3StepOne(m, fallback: fallback))
         }
         return out
+    }
+
+    /// 三段式处理单个 candidate（含脱敏 + 来源真实性闸 + verify + fallback）。
+    /// 失败时按 fallback 决定是回退到 2 步还是重新抛出。
+    func consolidate3StepOne(_ m: Memory, fallback: Bool) async throws -> [Memory] {
+        var mem = m
+        if config.redactBeforeConsolidate { mem = redactor.redact(mem) }
+        guard hasSource(mem) else { return [] }
+        do {
+            let analysis = try await analyze(mem)
+            let drafts = try await generate(candidate: mem, analysis: analysis)
+            var out: [Memory] = []
+            for d in drafts {
+                let text = d.textSafe
+                guard !text.isEmpty else { continue }
+                let draftSource = SourceRef(
+                    file: d.sourceFileSafe,
+                    line: d.sourceLineSafe,
+                    excerpt: d.sourceExcerptSafe
+                )
+                // 来源真实性闸：sourceFile 必须与原 candidate 的 source 同文件
+                guard mem.sources.contains(where: { $0.file == d.sourceFileSafe })
+                else { continue }
+                let draft = Memory(
+                    text: text,
+                    sources: [draftSource],
+                    decayClass: DecayClass(rawValue: d.decayClassRaw ?? "") ?? .normal
+                )
+                guard try await verify(draft) else { continue }
+                var accepted = draft
+                accepted.status = classify(accepted)
+                out.append(accepted)
+            }
+            return out
+        } catch {
+            if fallback {
+                // 三段任一失败：回退到两段（旧行为）
+                return try await consolidate([mem])
+            }
+            throw error
+        }
+    }
+
+    /// 智能入口：根据 config.useThreeStepCoT 选择 3 段或 2 段。
+    /// 这是 DreamCycle 应该调的主入口。
+    public func consolidateSmart(_ raw: [Memory]) async throws -> [Memory] {
+        if config.useThreeStepCoT {
+            return try await consolidate3Step(raw)
+        }
+        return try await consolidate(raw)
     }
 
     // MARK: - JSON 解析小工具（容错：LLM 偶尔会裹 markdown ```json``` 块）

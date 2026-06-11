@@ -7,7 +7,7 @@ import Foundation
 /// - 只替换为占位符，不删除整行——保留上下文可读性
 /// - 占位符标明类型，便于审查时判断脱敏是否误伤
 /// - raw/ 原文件永不被改写（只读层）；脱敏只作用于进 ledger 的副本
-public struct Redactor {
+public struct Redactor: Sendable {
 
     public struct Rule {
         public let label: String              // 占位符类型，如 API_KEY

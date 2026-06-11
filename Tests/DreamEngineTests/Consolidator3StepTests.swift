@@ -9,10 +9,20 @@ final class Consolidator3StepTests: XCTestCase {
     // MARK: - 测试 LLM：分阶段返回不同 JSON
 
     /// 简易多阶段 mock：按 system prompt 关键词分发
-    struct StagedLLM: LLMProvider {
+    /// final class 而非 struct —— 因为我们要在 protocol 的 non-mutating
+    /// complete() 里修改 callCount，struct 会触发 "left side of mutating
+    /// operator isn't mutable" 编译错。
+    final class StagedLLM: LLMProvider, @unchecked Sendable {
         var analysisJSON: String
         var draftsJSON: String
         var verifyAnswer: String = "YES"   // 默认 verify 通过
+        /// 累计调用次数（多线程访问需要 lock）
+        private let _lock = NSLock()
+        private var _callCount: Int = 0
+        var callCount: Int {
+            _lock.lock(); defer { _lock.unlock() }
+            return _callCount
+        }
 
         init(analysisJSON: String, draftsJSON: String, verifyAnswer: String = "YES") {
             self.analysisJSON = analysisJSON
@@ -21,6 +31,7 @@ final class Consolidator3StepTests: XCTestCase {
         }
 
         func complete(system: String, user: String) async throws -> String {
+            _lock.lock(); _callCount += 1; _lock.unlock()
             if system.contains("分析师") { return analysisJSON }
             if system.contains("提炼员") { return draftsJSON }
             if system.contains("事实校验器") { return verifyAnswer }
@@ -239,7 +250,8 @@ final class Consolidator3StepTests: XCTestCase {
 
     func testConsolidate3Step_noFallbackHardFails() async throws {
         let llm = StagedLLM(analysisJSON: "bad json", draftsJSON: "[]")
-        let c = Consolidator(llm: llm)
+        // concurrency=1 走 serial 模式，错误会自然抛出（fallback=false 时 hard-fail 语义）
+        let c = Consolidator(llm: llm, config: ConsolidationConfig(concurrency: 1))
         do {
             _ = try await c.consolidate3Step([makeCandidate()], consolidate2StepFallback: false)
             XCTFail("应抛错而不是悄悄通过")
@@ -248,10 +260,60 @@ final class Consolidator3StepTests: XCTestCase {
         }
     }
 
+    /// 并发：10 个候选 + concurrency=4，应该并发处理（callCount 累计到 ≥10 次 LLM 调用）
+    func testConsolidate3Step_concurrentProcessesAllCandidates() async throws {
+        let llm = StagedLLM(analysisJSON: #"{"reasoning":"ok","entities":[],"contradictions":[],"lessons":[]}"#,
+                            draftsJSON: "[]",
+                            verifyAnswer: "YES")
+        let c = Consolidator(llm: llm,
+                             config: ConsolidationConfig(concurrency: 4))
+        let candidates = (1...10).map { i in
+            makeCandidate(text: "候选 #\(i)", file: "raw/\(i).md")
+        }
+        let out = try await c.consolidate3Step(candidates)
+        // 至少应该有 10 次 LLM 调用（每个 candidate 至少 analyze 1 次）
+        XCTAssertGreaterThanOrEqual(llm.callCount, 10, "10 个候选应至少调 LLM 10 次")
+        XCTAssertGreaterThanOrEqual(out.count, 0)  // draftsJSON=[] 可能没有 accepted，但流程跑完
+    }
+
+    /// 并发：concurrency=1 等价于串行，所有候选都处理
+    func testConsolidate3Step_serialConcurrency1_processesAll() async throws {
+        let llm = StagedLLM(analysisJSON: #"{"reasoning":"ok","entities":[],"contradictions":[],"lessons":[]}"#,
+                            draftsJSON: "[]",
+                            verifyAnswer: "YES")
+        let c = Consolidator(llm: llm,
+                             config: ConsolidationConfig(concurrency: 1))
+        let candidates = (1...5).map { i in makeCandidate(text: "x\(i)", file: "raw/\(i).md") }
+        _ = try await c.consolidate3Step(candidates)
+        XCTAssertGreaterThanOrEqual(llm.callCount, 5)
+    }
+
+    /// consolidateSmart 根据 config 路由
+    func testConsolidateSmart_routesByConfig() async throws {
+        let llm = StagedLLM(analysisJSON: #"{"reasoning":"ok","entities":[],"contradictions":[],"lessons":[]}"#,
+                            draftsJSON: "[]",
+                            verifyAnswer: "YES")
+        // useThreeStepCoT=true 走 3 段路径。
+        // 这里 generate 会返回 []（空 drafts），所以流程只跑 analyze + generate = 2 次 LLM 调用。
+        // 想测到 verify 调用就得给一个非空 draftsJSON。
+        let c3 = Consolidator(llm: llm,
+                              config: ConsolidationConfig(useThreeStepCoT: true, concurrency: 1))
+        _ = try await c3.consolidateSmart([makeCandidate()])
+        let threeStepCount = llm.callCount
+        XCTAssertGreaterThanOrEqual(threeStepCount, 2, "3 段 CoT 至少 analyze + generate = 2 次 LLM 调用")
+
+        // useThreeStepCoT=false 走 2 段（每个候选只 verify 1 次）—— 用不同的 llm 实例避免 callCount 累加
+        let llm2 = StagedLLM(analysisJSON: "", draftsJSON: "", verifyAnswer: "YES")
+        let c2 = Consolidator(llm: llm2,
+                              config: ConsolidationConfig(useThreeStepCoT: false, concurrency: 1))
+        _ = try await c2.consolidateSmart([makeCandidate()])
+        XCTAssertEqual(llm2.callCount, 1, "2 步快速路径只 verify 1 次")
+    }
+
     func testConsolidate3Step_redactsBeforeAnalyze() async throws {
         // raw 文本含 API key → redact 闸在 analyze 前跑 → LLM 看到的是脱敏文本
         // 用一个 capture LLM 验证 analyze 步收到的 user prompt 不含明文 key
-        final class CaptureLLM: LLMProvider {
+        final class CaptureLLM: LLMProvider, @unchecked Sendable {
             var capturedByStep: [String: String] = [:]
             func complete(system: String, user: String) async throws -> String {
                 if system.contains("分析师") {

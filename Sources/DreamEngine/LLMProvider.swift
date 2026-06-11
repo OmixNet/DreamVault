@@ -11,18 +11,23 @@ import Foundation
 // - 调用方可以注入自己的 closure，模拟更复杂的 LLM 行为
 // - 不会抛错（除了 handler 显式 throw）— 失败的语义靠返回错误文本表达
 // - 是 class（非 struct）以便累积 `callCount` 而不打破 protocol 的非 mutating 要求
-public final class MockLLMProvider: LLMProvider {
+public final class MockLLMProvider: LLMProvider, @unchecked Sendable {
     public typealias Handler = (String, String) throws -> String  // (system, user) -> answer
     private let handler: Handler
     /// 记录调用次数，便于测试断言
-    public private(set) var callCount: Int = 0
+    private let _callCount = NSLock()
+    public var callCount: Int {
+        _callCount.lock(); defer { _callCount.unlock() }
+        return _count
+    }
+    private var _count: Int = 0
 
     public init(handler: @escaping Handler = MockLLMProvider.defaultHandler) {
         self.handler = handler
     }
 
     public func complete(system: String, user: String) async throws -> String {
-        callCount += 1
+        _callCount.lock(); _count += 1; _callCount.unlock()
         return try handler(system, user)
     }
 
@@ -51,7 +56,7 @@ public final class MockLLMProvider: LLMProvider {
 //
 // 配置：构造时给 baseURL / model；不读环境变量，方便测试和上层注入。
 // 网络错误/非 2xx → 抛 OllamaError，调用方决定是否回滚。
-public struct OllamaProvider: LLMProvider {
+public struct OllamaProvider: LLMProvider, Sendable {
     public let baseURL: URL
     public let model: String
 

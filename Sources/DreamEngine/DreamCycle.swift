@@ -1,5 +1,24 @@
 import Foundation
 
+// MARK: - DreamConfig：dream 全局配置
+
+/// dream 一次运行的所有可调参数。
+/// 默认值 = 生产推荐（3 段 CoT + 4 路并发）。
+public struct DreamConfig: Sendable {
+    public var consolidation: ConsolidationConfig
+
+    public init(consolidation: ConsolidationConfig = ConsolidationConfig()) {
+        self.consolidation = consolidation
+    }
+
+    /// 快速配置：纯 mock / 调试用（2 步快速路径 + 串行）
+    public static let fastDebug = DreamConfig(
+        consolidation: ConsolidationConfig(useThreeStepCoT: false, concurrency: 1)
+    )
+    /// 生产推荐配置（3 段 CoT + 4 路并发）
+    public static let productionDefault = DreamConfig()
+}
+
 // MARK: - DreamCycle：夜间一次的五步编排器
 //
 // 串起 Gather → Consolidate → Decay → Persist → Commit，每步失败都能干净回滚。
@@ -20,17 +39,20 @@ public struct DreamCycle {
     public let git: GitRunner?
     public let redactor: Redactor
     public let dryRun: Bool
+    public let config: DreamConfig
 
     public init(vaultRoot: URL,
                 llm: LLMProvider,
                 git: GitRunner? = nil,
                 redactor: Redactor = Redactor(),
-                dryRun: Bool = false) {
+                dryRun: Bool = false,
+                config: DreamConfig = DreamConfig()) {
         self.vaultRoot = vaultRoot
         self.llm = llm
         self.git = git
         self.redactor = redactor
         self.dryRun = dryRun
+        self.config = config
     }
 
     public struct Outcome: Equatable {
@@ -110,11 +132,13 @@ public struct DreamCycle {
             // — 2. Consolidate：新候选 → 经四道闸的可信教训 —
             // 这里把 Gatherer 已脱敏的候选原样传给 Consolidator；Consolidator 内
             // 还会再脱敏一次（redactBeforeConsolidate 默认 true），是幂等的。
-            let consolidator = Consolidator(llm: llm, redactor: redactor)
-            // 注意：Gatherer 产出的 candidate status 默认 .candidate（单源），升 durable
-            // 需要 ≥2 独立源。这里直接走 consolidate 走完闸 0/1/3/2。
+            let consolidator = Consolidator(llm: llm, config: config.consolidation, redactor: redactor)
+            // 主入口：根据 config.consolidation.useThreeStepCoT 路由
+            //   true  → consolidate3Step（生产 LLM 推荐，含 analyze → generate → verify）
+            //   false → consolidate（2 步快速路径，mock / 极快模型）
+            // 多候选并发上限由 config.consolidation.concurrency 控制。
             do {
-                newAccepted = try await consolidator.consolidate(gathered.candidates)
+                newAccepted = try await consolidator.consolidateSmart(gathered.candidates)
             } catch {
                 // 失败：撤掉已 gather 的状态（不写 processed 即可，下次会重收）
                 throw DreamError.consolidateFailed(underlying: error)
@@ -170,8 +194,12 @@ public struct DreamCycle {
         do {
             outcome = try persister.persist(input)
         } catch {
-            // 失败回滚：discard tracked changes + 删 DreamCycle 自己写的 .dream/ 文件
-            try? rollbackDreamArtifacts(vaultRoot: vaultRoot)
+            // 失败回滚：
+            // 1) git tracked 的文件（MEMORY.md / .dream/ledger.json / .dream/processed.json /
+            //    wiki/ / archive/）由 git.discardTrackedChanges() 还原（最干净）
+            // 2) 当次生成的 dream-report-{stamp}.md 由 rollbackDreamArtifacts 清掉
+            // 3) 绝不动历史 dream-report-* —— 暴力删目录的风险见 git log 早期修复
+            try? rollbackDreamArtifacts(vaultRoot: vaultRoot, currentReportStamp: Self.reportStamp(now: now))
             if let git { try? git.discardTrackedChanges() }
             throw DreamError.persistFailed(underlying: error)
         }
@@ -193,13 +221,30 @@ public struct DreamCycle {
     /// 删除 DreamCycle 自己写入的 .dream/ 下的报告/ledger（不算 raw/wiki 那些由 Gatherer/Persister 写的）。
     /// 这是兜底，正常失败回滚路径由 `discardTrackedChanges()` 处理；
     /// 本函数专门清 .dream/reports/ 和 .dream/ledger.json 这种 git 未跟踪的写入。
-    private func rollbackDreamArtifacts(vaultRoot: URL) throws {
+    /// 仅删除本次 dream 写入的、未被 git 跟踪的文件（保守兜底，绝不删历史报告）。
+    /// - ledger.json / processed.json：git tracked，`discardTrackedChanges()` 会还原，
+    ///   这里不动，避免误删历史版本
+    /// - reports/ 目录：保留，只删当前 stamp 对应的单条报告
+    /// - MEMORY.md / wiki/ / archive/：git tracked，由 discardTrackedChanges 还原
+    private func rollbackDreamArtifacts(vaultRoot: URL, currentReportStamp: String?) throws {
         let fm = FileManager.default
-        for path in [".dream/reports", ".dream/ledger.json", ".dream/processed.json"] {
-            let url = vaultRoot.appendingPathComponent(path)
-            if fm.fileExists(atPath: url.path) {
-                try? fm.removeItem(at: url)
-            }
+        // 只清"当次生成的单一报告"（如果能拿到 stamp）
+        if let stamp = currentReportStamp {
+            let reportURL = vaultRoot.appendingPathComponent(".dream/reports/dream-report-\(stamp).md")
+            try? fm.removeItem(at: reportURL)
         }
+        // 不删 .dream/reports/ 目录、.dream/ledger.json、.dream/processed.json：
+        // 全部交给 git discardTrackedChanges 还原（如果 git 配置了），未 tracked 的留着
+        // 也无所谓（下次 dream 会重新覆盖）
+    }
+
+    /// 与 Persister 内部的 stamp 格式保持一致 —— 给的同一个 now 必须产出同一个 stamp，
+    /// 否则失败回滚时找不到当次的报告。
+    static func reportStamp(now: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd-HHmmss"
+        f.timeZone = TimeZone.current
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f.string(from: now)
     }
 }
