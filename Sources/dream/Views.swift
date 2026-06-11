@@ -6,17 +6,22 @@ import DreamEngine
 
 struct MainView: View {
     @EnvironmentObject var model: AppModel
+    @StateObject private var editorState = EditorState()
 
     var body: some View {
         NavigationSplitView {
             VaultBrowser()
                 .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 400)
         } content: {
-            EditorPane()
+            EditorPane(state: editorState)
                 .navigationSplitViewColumnWidth(min: 400, ideal: 600)
         } detail: {
-            DreamPanel()
-                .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 500)
+            HSplitView {
+                FrontmatterInspector(state: editorState)
+                    .frame(minWidth: 260, idealWidth: 300, maxWidth: 400)
+                DreamPanel()
+                    .frame(minWidth: 280, idealWidth: 340, maxWidth: 500)
+            }
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
