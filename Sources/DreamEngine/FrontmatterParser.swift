@@ -67,6 +67,13 @@ public struct FrontmatterParser {
         public var body: String
         public var bodyStartLine: Int        // 1-based，正文第一行在原文件中的行号
 
+        public init(fields: [String: Value], orderedKeys: [String], body: String, bodyStartLine: Int) {
+            self.fields = fields
+            self.orderedKeys = orderedKeys
+            self.body = body
+            self.bodyStartLine = bodyStartLine
+        }
+
         public var isEmpty: Bool { orderedKeys.isEmpty }
 
         /// 按插入顺序返回 (key, value) 对

@@ -12,8 +12,12 @@ import DreamEngine
 /// autosave 走 EditorState.debounce(1.5s)；切文件/run dream/关窗前 EditorState.flushIfDirty()。
 public struct EditorPane: View {
     @EnvironmentObject var model: AppModel
-    @StateObject private var state = EditorState()
+    @ObservedObject var state: EditorState
     @ObservedObject var markdownRenderer: MarkdownRendererHolder = .shared
+
+    public init(state: EditorState) {
+        self.state = state
+    }
 
     public var body: some View {
         Group {
