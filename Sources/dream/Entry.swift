@@ -188,6 +188,8 @@ final class AppModel: ObservableObject {
     @Published var status: VaultStatus = .init()
     @Published var reportPath: String? = nil
     @Published var logLines: [String] = []
+    // T1 起 EditorState 接管 buffer / dirty 状态；保留 @Published 占位以兼容
+    // 其他可能直接读这两个字段的视图代码（实际 EditorPane 自己用 EditorState）
     @Published var textEditorContent: String = ""
     @Published var textEditorDirty: Bool = false
 

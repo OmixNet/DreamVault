@@ -25,5 +25,7 @@ let package = Package(
             ]
         ),
         .testTarget(name: "DreamEngineTests", dependencies: ["DreamEngine"]),
+        .testTarget(name: "DreamTests", dependencies: ["dream", "DreamEngine"],
+                    path: "Tests/DreamTests"),
     ]
 )
