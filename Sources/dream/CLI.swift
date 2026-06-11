@@ -1,39 +1,35 @@
 import Foundation
 import DreamEngine
 
+// MARK: - dream 二进制统一入口
+//
+// dream 这个二进制现在有两个 mode：
+//   1. CLI mode（默认）：`dream run` / `report` / `status` / `rollback` / `help` / `version`
+//   2. GUI mode（`dream app`）：启动 SwiftUI 主窗口（VaultBrowser + Editor + DreamPanel）
+//
+// 入口路由：
+//   - argv[1] == "app"  → 调 SwiftUI 的 App.main()（App 协议自身有 @main）
+//   - 其他              → 走 CLI dispatch
+//
+// 为何不让两个 mode 都用 @main？因为 Swift 一个 target 只能有一个 @main。
+// 解决：CLI 自己写 static main()，GUI 在 DreamVaultApp.swift 里写 @main。
+// 二进制顶层 entry 写一个 bootstrap 函数，梦引擎选择调哪个 main。
+
 // MARK: - dream CLI
-//
-// 把 DreamCycle 暴露成可执行命令。所有子命令都通过 ProcessInfo.arguments 解析。
-//
-// 子命令：
-//   dream run     [--vault <path>] [--dry-run]   跑一次 dream（五步）
-//   dream report  [--vault <path>]              列出最近 N 份 dream-report 路径
-//   dream status  [--vault <path>]              概览 vault 状态（raw/ 候选数 / ledger 条数 / 矛盾数）
-//   dream rollback [--vault <path>]             git revert 最近一次 dream commit
-//   dream help                                   打印这个帮助
-//
-// 全局：
-//   --vault <path>     vault 根目录（默认 $DREAMVAULT_VAULT 或 $HOME/.dreamvault）
-//   --llm <name>       覆盖 LLMFactory：mock / ollama（默认走环境变量 DREAMVAULT_LLM）
-//   --verbose          打 detail
-//
-// 设计要点：
-// - 不引第三方依赖，纯 stdlib（ArgumentParser 那类 fancy 库先不用）
-// - 所有子命令共享 main 一处入口，switch dispatch
-// - 退出码：0=成功、1=用户错误（路径/参数）、2=dream 阶段失败、3=git 失败
-@main
+
 struct DreamCLI {
-    static func main() async {
+    /// 真正的 CLI main（不是 @main）。由 entry() 显式调
+    /// 返回 exit code（不调 Foundation.exit，让 @main 统一收口）
+    static func main() async -> Int32 {
         let args = Array(CommandLine.arguments.dropFirst())  // 去掉 argv[0]
         do {
-            let code = try await dispatch(args)
-            Foundation.exit(code)
+            return try await dispatch(args)
         } catch let err as DreamCycle.DreamError {
             FileHandle.standardError.write(Data("dream: \(err)\n".utf8))
-            Foundation.exit(2)
+            return 2
         } catch {
             FileHandle.standardError.write(Data("dream: \(error.localizedDescription)\n".utf8))
-            Foundation.exit(1)
+            return 1
         }
     }
 
@@ -52,6 +48,7 @@ struct DreamCLI {
         case "report":  return cmdReport(rest, opts: opts)
         case "status":  return cmdStatus(rest, opts: opts)
         case "rollback": return cmdRollback(rest, opts: opts)
+        case "app":     return cmdApp(rest, opts: opts)
         case "help", "-h", "--help":
             printHelp()
             return 0
@@ -191,17 +188,29 @@ struct DreamCLI {
         }
     }
 
+    // MARK: - dream app (SwiftUI GUI)
+    //
+    // 这里只是 fallback —— 正常情况下 @main 在 Entry.swift 里的 DreamEntry.main()
+    // 会直接调 SwiftUI App.main()，不会走到这里。如果有人手工 dispatch 才到这。
+    static func cmdApp(_ args: [String], opts: GlobalOptions) -> Int32 {
+        // 实际 GUI 启动由 Entry.swift 的 @main 处理。这里只留个错误信息兜底。
+        FileHandle.standardError.write(Data(
+            "dream app: GUI 应由 @main 入口启动，不应通过 CLI dispatch 走到这里\n".utf8))
+        return 1
+    }
+
     // MARK: - help
 
     static func printHelp() {
         let help = """
-        dream — DreamVault 夜间记忆整理 CLI
+        dream — DreamVault 夜间记忆整理 CLI / GUI
 
         用法:
           dream run     [--vault <path>] [--dry-run]
           dream report  [--vault <path>] [--last N]
           dream status  [--vault <path>]
           dream rollback [--vault <path>]
+          dream app     [--vault <path>]              启动 SwiftUI GUI
           dream help
           dream version
 
@@ -225,6 +234,7 @@ struct DreamCLI {
 
         示例:
           dream run --vault ~/MyVault
+          dream app --vault ~/MyVault              # 打开 GUI 窗口
           dream run --vault ~/MyVault --llm ollama
           dream report --last 3
           dream status

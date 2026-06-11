@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>dream</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.OmixNet.dreamvault.gui</string>
+    <key>CFBundleName</key>
+    <string>DreamVault</string>
+    <key>CFBundleDisplayName</key>
+    <string>DreamVault</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>LSUIElement</key>
+    <false/>
+    <!-- 禁掉自动窗口状态恢复（SwiftUI WindowGroup 没存状态，restore 会卡死 0 窗） -->
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+    <key>NSQuitAlwaysKeepsWindows</key>
+    <false/>
+    <key>NSHumanReadableCopyright</key>
+    <string>DreamVault GUI — local-first knowledge base + nightly dream.</string>
+</dict>
+</plist>

@@ -1,6 +1,6 @@
 # DreamVault
 
-macOS 原生 Markdown 知识库 + dream 夜间记忆整理。本仓库是**内核**（DreamEngine 库 + 端到端测试 + 文档），不包含 GUI 外壳。
+macOS 原生 Markdown 知识库 + dream 夜间记忆整理。本仓库包含 **内核**（DreamEngine 库 + 端到端测试 + 文档）、**dream CLI**、**dream SwiftUI GUI** 和 **launchd 夜间调度**。
 
 ## 跑起来
 
@@ -35,6 +35,17 @@ dream version
 ```
 
 全局：`--vault <path>` / `--llm {mock|ollama}` / `--verbose`
+
+GUI 子命令：
+
+```bash
+swift build
+# 启动 SwiftUI 外壳（VaultBrowser / Editor / DreamPanel）
+.build/arm64-apple-macosx/debug/dream app --vault ~/MyVault
+# 或装好 .app bundle 后：
+bash scripts/build-app.sh
+open ~/Applications/DreamVault.app --args app --vault ~/MyVault
+```
 
 环境变量：`DREAMVAULT_LLM=mock|ollama`（默认 mock）、`DREAMVAULT_VAULT`（默认 `~/.dreamvault`）、`OLLAMA_BASE_URL`、`OLLAMA_MODEL`
 
@@ -84,10 +95,37 @@ dream version
 - `docs/REFERENCE_SPEC.md` — "先学后写"的学习产物（4 个参考项目的许可证红线 + 思想摘要）
 - `docs/LEARNED_ALGORITHMS.md` — **强烈推荐**第 1 棒 Claude 先读这个：三个真正值得学的项目（Karpathy LLM Wiki gist / nashsu/llm_wiki / rohitg00/agentmemory）的思想提取 + 与 DreamVault 内核的对照表 + 待补清单
 
-## 下一步（体力活，外壳方向）
+## 下一步（生产调参）
 
-1. **SwiftUI 外壳** — VaultBrowser（文件树 + wiki 浏览） / Editor（raw 模式锁定） / DreamPanel（看 dream-report、手动触发、回滚）
-2. **生产调参** — 用真实 raw 日志跑 2 周，盯 dream-report 调 `DecayConfig`（默认权重 0.5/0.3/0.2、τ 30 天、阈值 0.15、staleDays 90 都是起点）
+1. **生产调参** — 用真实 raw 日志跑 2 周，盯 dream-report 调 `DecayConfig`（默认权重 0.5/0.3/0.2、τ 30 天、阈值 0.15、staleDays 90 都是起点）
+2. **编辑器增强** — 加 markdown live preview、VaultSearch（跨 vault 全文搜索）
+
+## dream GUI（SwiftUI，已实现）
+
+`dream app` 启动 3 栏 NavigationSplitView：左 vault 文件树（`raw/` + `wiki/` + `archive/`）、中 Markdown 编辑器（`raw/` 只读锁定）、右 Dream 面板（Run / Rollback / Report / Log）。
+
+**首次构建 .app bundle**：
+
+```bash
+bash scripts/build-app.sh     # build release + 产出 ~/Applications/DreamVault.app
+open ~/Applications/DreamVault.app --args app --vault ~/MyVault
+```
+
+bundle ID：`com.OmixNet.dreamvault.gui`（区别于 CLI 的隐式 bundle）。
+
+**实现细节**：
+- `Package.swift` 用 `linkerSettings.unsafeFlags` 把 `Resources/Info.plist` 嵌进 binary 的 `__TEXT,__info_plist` section —— SwiftPM 默认不会嵌，必须手动 `-sectcreate`。Info.plist 里 `NSQuitAlwaysKeepsWindows=false` + `NSSupportsAutomaticTermination=false` 禁掉 AppKit state restoration race（否则 SwiftUI WindowGroup 在 macOS 13 SwiftPM 产物下卡死 0 窗）。
+- `Sources/dream/Entry.swift` 是 `@main DreamEntry`，argv[1]==`app` → `DreamVaultApp.main()`（SwiftUI run loop），否则 → `DreamCLI.main()`（async via detached Task）。
+- SwiftUI WindowGroup 在某些环境下 state restoration race 会 0 窗，`AppDelegate.applicationDidFinishLaunching` 延迟 1.5s 后 fallback：手 `NSWindow` + `NSHostingView(MainView())` 兜底，确保至少一个 `AXStandardWindow` 出现。
+- `AppModel` 是 `@MainActor ObservableObject`，三个面板共享 `vaultRoot / selectedFile / lastOutcome / status / logLines` 等 `@Published`。
+- `EditorPane`：`raw/` 只读（AppKit `isEditable=false`）；wiki/archive 可编辑；`Cmd-S` 触发 `TextEditor` 内容回写到磁盘。
+- `DreamPanel`：Run Dream 按钮起 `Task { await runDream() }`、Rollback `git revert HEAD`、Report/Log 两个 Tab。
+
+**验证**（已在 mavis 会话里跑过）：
+```
+osascript -e 'tell application "System Events" to tell process "DreamVault" to get {count windows, name of window 1, subrole of window 1}'
+→ windows=1 title="DreamVault" subrole=AXStandardWindow
+```
 
 ## 夜间调度（launchd 已实现）
 
