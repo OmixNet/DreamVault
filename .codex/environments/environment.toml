@@ -1,0 +1,70 @@
+# DreamVault dev environment
+#
+# Build macOS Apps 工作流的标准入口。
+# 让 Codex / 任何外部脚本通过一个稳定的 contract 知道怎么 build / run / verify。
+#
+# 字段语义：参考 Codex 环境的常用约定（toml，键值形式）。
+# 外部脚本（Codex / CI / 调试器）只需要读这个文件就能正确调用。
+
+# 项目根（绝对路径，启动时由脚本自动校正）
+project_root = "/Users/biomatrix/Desktop/APP/DreamVault"
+
+# GUI 包名 / bundle id / 主二进制名
+bundle_id      = "com.OmixNet.dreamvault.gui"
+binary_name    = "DreamVault"
+app_name       = "DreamVault"
+
+# 入口脚本（Build macOS Apps 的标准调用）
+[scripts]
+# 稳定开发入口：build 临时 .app + open -n + 日志 + 验证
+dev_run    = "scripts/build_and_run.sh"
+
+# 仅 build release
+build_only = "scripts/build-app.sh"
+
+# launchd 安装/卸载/测试
+install    = "scripts/install.sh"
+uninstall  = "scripts/uninstall.sh"
+launchd_test = "scripts/test-launchd.sh"
+
+# CLI 二进制（swift build 产物）
+cli_binary = ".build/release/dream"
+
+# 默认 vault 路径
+default_vault = "~/.dreamvault"
+
+# 日志目录（macOS standard）
+log_dir        = "~/Library/Logs/DreamVault"
+launchd_log    = "~/Library/Logs/DreamVault/dream-stdout.log"
+launchd_err    = "~/Library/Logs/DreamVault/dream-stderr.log"
+
+# 测试命令
+test_command   = "swift test --package-path /Users/biomatrix/Desktop/DreamVault"
+# 上面这个是直连——但本地 bash shim 会改 swift <cmd>，用 build wrapper 替代：
+#   /tmp/dtst   → swift test  (DreamVault 专用，硬编码 workdir)
+#   /tmp/dvsw_build → swift build  (同上)
+# 这两个 wrapper 在 ~/.mavis/plans/... 里；script 里直接调 /tmp/dvbuild_release 也可以
+
+# build_and_run.sh 退出码
+[exit_codes]
+ok                = 0
+build_failed      = 1
+process_not_found = 2
+verify_failed     = 3
+
+# GUI --vault 行为（Entry.swift 解析顺序）
+[vault_resolution]
+# 高 → 低优先级
+sources = [
+  "init(vault:) 显式构造参数",
+  "argv --vault / -v (从 UserDefaults 注入)",
+  "DREAMVAULT_VAULT 环境变量",
+  "~/.dreamvault 默认",
+]
+
+# 路由逻辑（DreamEntry.main）
+[routing]
+# 默认 GUI；只有以下 argv[1] 才走 CLI
+default = "GUI"
+cli_subcommands = ["run", "rollback", "status", "report", "help", "version"]
+explicit_gui    = ["app"]  # "app" 显式走 GUI，其他都按 default

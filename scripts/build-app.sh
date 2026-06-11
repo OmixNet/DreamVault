@@ -88,10 +88,13 @@ echo
 echo "==> 完成！"
 echo
 echo "启动 GUI："
-echo "  open ~/Applications/DreamVault.app"
+echo "  open -n ~/Applications/DreamVault.app"
 echo
 echo "或带 vault 路径："
-echo "  open ~/Applications/DreamVault.app --args app --vault ~/MyVault"
+echo "  open -n ~/Applications/DreamVault.app --args app --vault ~/MyVault"
+echo
+echo "或开发用（自动 build + 临时 .app + verify）："
+echo "  bash scripts/build_and_run.sh --verify"
 echo
 echo "卸载："
 echo "  rm -rf ~/Applications/DreamVault.app"

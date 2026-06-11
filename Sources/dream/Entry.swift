@@ -5,34 +5,77 @@ import DreamEngine
 
 // MARK: - dream 二进制顶层入口
 //
-// 路由：
-//   argv[1] == "app"  → 启动 SwiftUI GUI（DreamVaultApp.main()）
-//   其他 / 空           → 走 CLI（DreamCLI.main()）
+// 路由（默认 GUI，CLI 显式 opt-in）：
+//   argv[1] 是已知 CLI 子命令（run/rollback/status/help/version/init）→ 走 CLI
+//   argv[1] == "app"                                              → 走 GUI（显式）
+//   其他（空 / Finder 双击 / open / Spotlight / 自定义参数）      → 默认走 GUI
+//
+// 关键：双击 .app 时 argv 可能是 [Contents/MacOS/dream]，没有 "app" 也没有子命令。
+// 这种情况下回到默认 GUI 路径，否则会闪退到 CLI 帮助。
 //
 // 用 @main 在这里 —— SwiftUI 那边不再写 @main。
 
 @main
 struct DreamEntry {
+    /// 已知 CLI 子命令集合；只有命中这些才走 CLI，其他全部默认走 GUI。
+    /// 完整列表见 CLI.swift `DreamCLI.main()` 的 switch 块。
+    private static let cliSubcommands: Set<String> = [
+        "run", "rollback", "status", "report", "help", "version",
+    ]
+
     static func main() {
         let args = Array(CommandLine.arguments.dropFirst())
-        if args.first == "app" {
-            // SwiftUI 路径：必须比 NSApplication init 早设这两个 UserDefaults，
-            // 否则 CFPrefsD 会在 applicationWillFinishLaunching 之前加载默认 true，
-            // 卡在 "Restoring windows" 然后 0 窗出来。
-            UserDefaults.standard.set(false, forKey: "ApplePersistenceIgnoreState")
-            UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
-            UserDefaults.standard.synchronize()
-            DreamVaultApp.main()
+        let firstArg = args.first
+
+        // 显式 "app" 走 GUI；未知/空走 GUI（兼容双击 / Finder / Spotlight / open 启动）
+        if firstArg == "app" || firstArg == nil || !cliSubcommands.contains(firstArg ?? "") {
+            launchGUI(args: args)
         } else {
-            // CLI 路径：DreamCLI.main() 是 async，起 Task 跑，进程挂起等结果
-            let sema = DispatchSemaphore(value: 0)
-            Task.detached {
-                let code = await DreamCLI.main()
-                Foundation.exit(code)
-            }
-            // 死等 —— DreamCLI.main() 内部调 Foundation.exit() 终止进程
-            sema.wait()
+            launchCLI()
         }
+    }
+
+    /// 启动 SwiftUI GUI：必须比 NSApplication init 早设 UserDefaults，
+    /// 否则 CFPrefsD 会在 applicationWillFinishLaunching 之前加载默认 true，
+    /// 卡在 "Restoring windows" 然后 0 窗出来。
+    private static func launchGUI(args: [String]) {
+        // 把 --vault / -v 解析出来，写进 UserDefaults 让 AppModel 读
+        // （AppModel 是 @MainActor，@StateObject 不接受构造参数——用 UserDefaults 中转）
+        if let vault = parseVaultArg(args) {
+            UserDefaults.standard.set(vault, forKey: "DreamVaultInitialVault")
+        }
+        UserDefaults.standard.set(false, forKey: "ApplePersistenceIgnoreState")
+        UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
+        UserDefaults.standard.synchronize()
+        DreamVaultApp.main()
+    }
+
+    /// CLI 路径：DreamCLI.main() 是 async，起 Task 跑，进程挂起等结果
+    private static func launchCLI() {
+        let sema = DispatchSemaphore(value: 0)
+        Task.detached {
+            let code = await DreamCLI.main()
+            Foundation.exit(code)
+        }
+        // 死等 —— DreamCLI.main() 内部调 Foundation.exit() 终止进程
+        sema.wait()
+    }
+
+    /// 从 argv 解析 --vault <path> 或 --vault=<path>。命中返回绝对 URL，否则 nil。
+    private static func parseVaultArg(_ args: [String]) -> String? {
+        var i = 0
+        while i < args.count {
+            let a = args[i]
+            if a == "--vault" || a == "-v" {
+                if i + 1 < args.count { return args[i + 1] }
+                return nil
+            }
+            if a.hasPrefix("--vault=") {
+                return String(a.dropFirst("--vault=".count))
+            }
+            i += 1
+        }
+        return nil
     }
 }
 
@@ -148,13 +191,35 @@ final class AppModel: ObservableObject {
     @Published var textEditorContent: String = ""
     @Published var textEditorDirty: Bool = false
 
-    /// GUI 模式默认 vault 路径 = ~/.dreamvault，可被 --vault 覆盖
+    /// GUI 模式默认 vault 路径解析顺序（最高优先在前）：
+    /// 1. init(vault:) 显式传入
+    /// 2. UserDefaults["DreamVaultInitialVault"]（Entry.swift 从 --vault 写入）
+    /// 3. DREAMVAULT_VAULT 环境变量
+    /// 4. ~/.dreamvault
     init(vault: URL? = nil) {
         let env = ProcessInfo.processInfo.environment["DREAMVAULT_VAULT"]
+        let fromUserDefaults = UserDefaults.standard.string(forKey: "DreamVaultInitialVault")
         let defaultPath = vault
+            ?? fromUserDefaults.map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? (env.map { URL(fileURLWithPath: $0, isDirectory: true) })
             ?? URL(fileURLWithPath: NSHomeDirectory() + "/.dreamvault", isDirectory: true)
         self.vaultRoot = defaultPath
+        // 用完即清：避免下次启动时残留旧 vault
+        if fromUserDefaults != nil {
+            UserDefaults.standard.removeObject(forKey: "DreamVaultInitialVault")
+        }
+        refreshStatus()
+    }
+
+    /// 运行时切换 vault（GUI 内例如 File→Open Vault... 菜单调用）。
+    /// 切换前会尝试把当前编辑器脏内容 flush（提示上层先保存）。
+    func switchVault(to url: URL) {
+        self.vaultRoot = url
+        self.selectedFile = nil
+        self.textEditorContent = ""
+        self.textEditorDirty = false
+        self.lastOutcome = nil
+        self.lastError = nil
         refreshStatus()
     }
 
