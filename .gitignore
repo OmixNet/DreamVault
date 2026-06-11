@@ -18,3 +18,7 @@ DerivedData/
 
 # DreamEngine自身产物（库产物不应入库）
 Package.resolved
+
+# mavis plans (运行时残留，per-topic workspace 调试产物)
+.mavis/plans/
+docs/.Rhistory
