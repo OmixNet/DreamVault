@@ -64,6 +64,85 @@ MyVault/
 
 关键：DreamEngine 不 import SwiftUI。它能单独跑、单独测、单独被 cron/launchd 调起。GUI 只是它的一个调用者。这让你能先把内核跑通再长外壳。
 
+### 2.1 Editor 拓扑（v0.2.0 增量）
+
+4 栏 `NavigationSplitView` + 顶栏 git banner 的组件依赖：
+
+```
+┌─ MainView (SwiftUI) ──────────────────────────────────────────────┐
+│                                                                   │
+│  ┌─ VaultBrowser ─┐  ┌─ VStack ──────────┐  ┌─ HSplitView ─────┐ │
+│  │ List<URL>      │  │ ┌─ GitStatusBanner┐│  │ ┌─ Inspector ─┐ │ │
+│  │ raw/ + wiki/   │  │ │ 三态颜色+ N/N    ││  │ │ Frontmatter  │ │ │
+│  │ + MEMORY.md    │  │ ├─────────────────┤│  │ │ + TitleResol │ │ │
+│  │ + .dream/*     │  │ │ EditorPane      ││  │ └──────────────┘ │ │
+│  │                │  │ │ ┌─ NSTextView ─┐││  │ ┌─ DreamPanel ─┐ │ │
+│  │                │  │ │ │ Source/      │││  │ │ Run/Rollback/│ │ │
+│  │                │  │ │ │ Preview/     │││  │ │ Report/Log   │ │ │
+│  │                │  │ │ │ Split        │││  │ └──────────────┘ │ │
+│  │                │  │ │ └──────────────┘││  │                   │ │
+│  │                │  │ └─────────────────┘│  │                   │ │
+│  └────────────────┘  └───────────────────┘  └───────────────────┘ │
+│                                                                   │
+│  ┌─ @StateObject (提到 MainView，4 栏共享) ───────────────────┐  │
+│  │ editorState: EditorState                                     │  │
+│  │   ├ currentFile / buffer / isDirty / mode (.source/.preview/.split)
+│  │   └ autosaveDelay=1.5s (Combine debounce)                     │
+│  │                                                                │
+│  │ gitWatcher: GitStatusWatcher (@MainActor ObservableObject)    │  │
+│  │   ├ statuses: [relPath: GitFileStatus.State]                   │  │
+│  │   └ diffs: [relPath: DiffGenerator.Result]                    │  │
+│  │                                                                │  │
+│  │ model: AppModel (来自 EnvironmentObject)                       │  │
+│  │   ├ vaultRoot / selectedFile / status / logLines               │  │
+│  │   └ runDream / rollback / refreshStatus                       │  │
+│  └────────────────────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────────────┘
+        │                │                │              │
+        ▼                ▼                ▼              ▼
+   DreamEngine:    DreamEngine:      DreamEngine:    DreamEngine:
+   - TitleResolver - FrontmatterParser - GitStatusParser - DreamCycle
+   - WikilinkIndex - MarkdownRenderer - DiffGenerator  - Persister
+                                                - GitRunner
+```
+
+**Editor 状态机** (`EditorState`)：
+
+```
+                  openFile(url)
+   ┌─────────┐ ─────────────────► ┌─────────┐
+   │ .empty  │                     │.editing │ ◄──┐
+   └─────────┘                     │ dirty=T │    │ autosave tick
+        ▲                          └────┬────┘    │ (1.5s debounce)
+        │                               │         │
+        │ closeFile                     │         │
+        │                               ▼         │
+        │                          ┌─────────┐    │
+        └──────────────────────────┤  same   │────┘
+                                   │ dirty=F │
+                                   └─────────┘
+```
+
+raw/ 文件特殊路径：`openFile(raw/*.md)` → `isRaw=true` → `isEditable=false` + `effectiveMode=.preview`（split 也强制 preview），且 FrontmatterInspector 显示 "raw 不可编辑"。
+
+**Git 状态感知** (`GitStatusWatcher` 触发点)：
+
+- `onAppear` → `refresh(vaultRoot:)` 一次
+- `onChange(model.selectedFile)` → `refresh` + `updateDiff(for:)`
+- `onChange(editorState.buffer)` → `updateDiff(for:)`（autosave 之后重新算 diff）
+- 顶栏 banner 颜色映射：clean=绿 / modified+staged+untracked=橙 / conflict=红
+- conflict 时三按钮：Keep Mine (`git checkout --ours`) / Keep Theirs (`git checkout --theirs`) / Open Raw（raw/ 永远走这条）
+
+**P0 入口** (`Entry.swift` 路由)：
+
+```
+argv[1] ∈ {"run","rollback","status","report","help","version"} → DreamCLI.main()
+argv[1] ∉ 白名单 或 缺省                                    → DreamVaultApp.main() (GUI)
+--vault/-v <path> 任意位置 → UserDefaults["DreamVaultInitialVault"]
+                            → AppModel.init 读 + clear
+                            → MainView 用 model.vaultRoot
+```
+
 ## 3. dream 五步数据流（夜间一次）
 
 ```

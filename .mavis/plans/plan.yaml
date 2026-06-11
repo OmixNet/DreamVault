@@ -1,0 +1,351 @@
+version: 1
+plan:
+  name: 'DreamVault 按 arch doc 第 1/3.1/4/5 节补齐 6 条 gap + e2e 验证'
+  max_concurrency: 4
+  max_consecutive_failures: 2
+  max_cycles: 8
+  verifier_config:
+    default_verifiers: [verifier]
+    audit_sample_rate: 0.0
+
+tasks:
+  # ============================================================
+  # 轨道 A — Persister/Decayer
+  # ============================================================
+  - id: persister-wiki-three-dirs
+    title: 'wiki 三目录 (entities/concepts/syntheses) + Decayer 接入 + 矛盾链接'
+    assigned_to: coder
+    timeout_ms: 1800000
+    prompt: |
+      工作目录: /Users/biomatrix/Desktop/APP/DreamVault
+      已读 docs/ARCHITECTURE.md 第 1/3/4/5 节。
+
+      ## 目标
+      把 arch doc 第 1 节 "wiki/{entities,concepts,syntheses}/" 三目录、第 3.4 步
+      "更新 wiki [[links]]"、第 4 节"矛盾 → contradicts:: 链接"全部落到代码里。
+
+      ## 范围（一次 PR 内全部做完）
+
+      1. **Memory 加 kind 字段** (Sources/DreamEngine/Models.swift)
+         - 新增 `enum MemoryKind: String, Codable, Sendable { case entity, concept, synthesis }`
+         - `Memory` 加 `var kind: MemoryKind = .concept`（默认 concept，向后兼容老 ledger）
+         - 加 `relatedTo: [String]`（作为矛盾/相关的双向链接存储，避免扫整盘 graph）
+
+      2. **Consolidator 落 kind** (Sources/DreamEngine/Consolidator.swift)
+         - analyze 阶段让 LLM 输 `kind` 字段（entity/concept/synthesis）；fallback 仍 .concept
+         - *Safe accessor: `kindSafe`
+
+      3. **Persister 分目录写 wiki** (Sources/DreamEngine/Persister.swift)
+         - 删 `let rel = "wiki/concepts/\(m.id).md"` 硬编码
+         - 按 `m.kind` 分发：
+             .entity    → `wiki/entities/{id}.md`
+             .concept   → `wiki/concepts/{id}.md`
+             .synthesis → `wiki/syntheses/{id}.md`
+         - archive 路径同步改成 `wiki/archive/{id}.md`（保留现状）
+         - 启动时确保 `wiki/{entities,concepts,syntheses,archive}/` 4 个目录都存在
+
+      4. **矛盾链接落 wiki 页** (Sources/DreamEngine/Persister.swift 或 ContradictionDetector 后置)
+         - 现有 `ContradictionDetector` 检测出 (a, b) 矛盾后，写：
+             - `wiki/{kind(a)}/{a}.md` 末尾追加 `## contradicts\n- [[wiki/{kind(b)}/{b}]]`
+             - 另一方向同理
+         - 同步把 `a.relatedTo.append(b)` / `b.relatedTo.append(a)`
+
+      5. **Decayer 接入 DreamCycle 第 3 步** (Sources/DreamEngine/DreamCycle.swift + Decayer.swift)
+         - 在 consolidate 之后、persist 之前调用 `Decayer`：
+             - 对 ledger 所有非 archived 记忆重算 salience
+             - 公式：salience = w_r * exp(-Δt/τ) + w_f * (1 - exp(-n/k)) + w_l * min(1, links/L)
+             - 默认：w_r=0.5, w_f=0.3, w_l=0.2, τ=30天, k=5, L=8
+             - salience < 0.15 且 lastAccess > 90天 → 标 .archived，移入 wiki/archive/
+         - `Decayer` 当前可能在文件里半成品 — 检查后补齐实现（含参数配置 + 公式）
+         - 把 `DecayResult` 喂给 `Persister.Input.decayResults`（已经预留字段）
+
+      ## 不要做
+      - 不动 LLMProvider / LLMFactory
+      - 不动 GitRunner（上一轮已修）
+      - 不动 Gatherer（上一轮已修）
+      - 不动 Redactor（上一轮已修）
+
+      ## 验证（自己跑）
+      1. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dvsw_build 2>&1 | tail -10
+         （shim 修复后的 build wrapper — 见 /tmp/dvsw_build /tmp/dtst）
+      2. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dtst 2>&1 | tail -10
+         （要求 56→N+5+ 测试，新测覆盖：kind 默认值兼容 / Persister 按 kind 落不同目录 /
+          矛盾链接写入 / Decayer 公式边界 / archived 移目录）
+      3. commit & git push（如果 remote 配好）
+         远端: git@github.com:OmixNet/DreamVault.git
+         用 /usr/local/bin/git 或 git；SSH 通过 ssh.github.com:443 (见 ~/.ssh/config)
+
+      ## deliverable
+      deliverable.md 写在 worktree 根或 workdir，写清：
+      - 改了哪些文件、每文件改动一句话
+      - 新增/修改的测试列表
+      - test 命令输出最后 5 行
+      - git commit hash
+      - 任何 arch-doc 妥协（应该没有）
+
+    verified_by: verifier
+    verify_prompt: |
+      独立验证 track A，不要 re-read producer 的 deliverable.md，自己跑：
+
+      1. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dvsw_build 2>&1 | tail -5
+         必须 Build complete!（之前修了 3 个 arch 修正点后已稳定 baseline）
+      2. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dtst 2>&1 | tail -10
+         测试数应 >= 61（56 旧 + ≥5 新）
+      3. 自己起一个临时 vault（用 mktemp -d）：
+         vault=$HOME/trackA-verify-$$
+         mkdir -p $vault/raw $vault/wiki/concepts $vault/wiki/entities $vault/wiki/syntheses $vault/wiki/archive
+         cd $vault && git init -q && git -c user.name=ci -c user.email=ci@local commit --allow-empty -m init -q
+         放一个 raw 进去：cp /Users/biomatrix/Desktop/APP/DreamVault/Tests/Fixtures/.../something.md $vault/raw/ 2>/dev/null || cat > $vault/raw/test.md <<'EOF'
+         ---
+         processed: false
+         ---
+         test body
+         EOF
+         /Users/biomatrix/Desktop/APP/DreamVault/.build/release/dream run --vault $vault --llm mock --verbose
+         验证：
+         - $vault/wiki/concepts 或 entities 或 syntheses 下应出现 .md
+         - 落 archive 的（如有）应在 wiki/archive/
+         - .dream/reports/dream-report-*.md 应存在
+         - git log 应只有 1 个 dream commit，stat 不含 raw/ 路径
+      4. 检查 Models.swift 确认 Memory 真的有 `kind: MemoryKind` 字段并有 default。
+      5. 找到 Persister 写 wiki 的代码段，确认硬编码 "wiki/concepts/" 已消失。
+
+      FAIL 条件（任一触发即 FAIL 并说明哪条）：
+      - build 失败
+      - test 数 < 61
+      - dream 跑通但 commit stat 包含 raw/
+      - 矛盾链接代码缺失（grep "contradicts" 不到 Persister 相关行）
+      - Decayer 没接入 DreamCycle（grep "Decayer" 在 DreamCycle.swift 不到调用）
+
+      VERDICT: PASS or FAIL（+ 缺什么）
+
+  # ============================================================
+  # 轨道 B — Config + 证据阈值
+  # ============================================================
+  - id: config-and-evidence-threshold
+    title: '.dream/config.json 持久化 + Consolidator 证据 ≥2 源阈值'
+    assigned_to: coder
+    timeout_ms: 1800000
+    prompt: |
+      工作目录: /Users/biomatrix/Desktop/APP/DreamVault
+      已读 docs/ARCHITECTURE.md 第 1 节 config.json / 第 5.2 证据阈值。
+
+      ## 目标
+      把 arch doc 第 1 节".dream/config.json 持有 LLM 选择 / 衰减参数 / 调度"和
+      第 5.2 节"一条规则要进 MEMORY.md 需在 ≥2 个独立 raw 源中出现支撑"实现到位。
+
+      ## 范围
+
+      1. **新增 DreamConfigLoader** (Sources/DreamEngine/DreamConfig.swift 新增，或新建文件)
+         - `struct VaultConfig: Codable, Sendable` 字段：
+             llm: { provider: "mock"|"ollama"|"openai_compat", model: String, baseURL: String?, apiKey: String? }
+             decay: { wRecency: Double, wFrequency: Double, wLinkage: Double,
+                      tauDays: Double, kFrequency: Double, lLinkage: Double,
+                      archiveSalienceThreshold: Double, archiveStaleDays: Double }
+             gather: { requireFrontmatterProcessedFalse: Bool }  // 默认 true（保持当前行为）
+         - `.dream/config.json` 加载：缺则用 defaults 写入并继续（不报错）
+         - `LLMFactory.fromConfig(_:)` 替换 `fromEnvironment()`（保留旧入口做 deprecation alias）
+         - `Decayer.init(config:)` 用 config 的参数
+
+      2. **DreamCycle 注入 VaultConfig**
+         - `DreamCycle.init(vaultRoot:config:...)` 接受可选 config，nil 则用 defaults
+         - 把 config 透传给 Gatherer / Consolidator / Decayer / Persister
+
+      3. **Consolidator 证据 ≥2 源阈值** (Sources/DreamEngine/Consolidator.swift)
+         - `Analysis.sourceCount`（来自 raw 引用数）
+         - 新增 `ConsolidationConfig.evidenceThresholdForDurable: Int = 2`
+         - candidate 升 durable 前检查 `m.sources.count >= threshold`
+         - 不达标 → 留在 candidate，dream-report 标注"单源观察，未升 durable"
+         - 加 Memory 字段 `evidences: [String]`（distinct source files 列表）便于审计
+
+      4. **CLI 写一份 vault 默认 config.json** (Sources/dream/CLI.swift 加 `dream init --vault <path>` 子命令)
+         - 第一次跑 init 时创建 vault 目录 + .dream/config.json + raw/ + wiki/{4个}/
+         - 不重复创建（已存在则跳过）
+
+      ## 不要做
+      - 不动 Persister（track A 在做）
+      - 不动 GitRunner / Redactor / Gatherer
+
+      ## 验证（自己跑）
+      1. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dvsw_build 2>&1 | tail -5
+      2. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dtst 2>&1 | tail -10
+         （要求新增 ≥4 个测试：config 缺省加载 / 写默认 config / evidenceThreshold=2 时
+          1源候选不升 durable / 2源候选升 durable / CLI init 创建目录树）
+      3. 跑一遍：`/Users/biomatrix/Desktop/APP/DreamVault/.build/release/dream init --vault /tmp/dvinit-$$ && cat /tmp/dvinit-$$/.dream/config.json`
+         应得到 4 个 wiki 子目录 + 一份默认 config
+
+      ## deliverable
+      deliverable.md 写：
+      - 改动文件列表
+      - 新增/修改的测试
+      - test 输出尾 5 行
+      - git commit hash
+      - 默认 config.json 实际内容
+
+    verified_by: verifier
+    verify_prompt: |
+      独立验证 track B，自己跑：
+
+      1. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dvsw_build 2>&1 | tail -3
+      2. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dtst 2>&1 | tail -5
+         测试数应 >= track A 末态 + 4
+      3. rm -rf /tmp/dvinit-verify-$$ && mkdir -p /tmp/dvinit-verify-$$
+         /Users/biomatrix/Desktop/APP/DreamVault/.build/release/dream init --vault /tmp/dvinit-verify-$$
+         验证：
+         - /tmp/dvinit-verify-$$/ 下有 raw/、wiki/entities、wiki/concepts、wiki/syntheses、wiki/archive、.dream/
+         - /tmp/dvinit-verify-$$/.dream/config.json 是合法 JSON
+         - config 包含 llm/decay/gather 三大块
+      4. 写一个测试 vault，1 个 raw 跑 dream，验证：候选 memory 的 status 是 .candidate 而非 .durable（因为只 1 源不达 threshold）
+         提示：mocks 模式下 Consolidator 怎么决定 sources 数？grep `source` 在 Consolidator.swift 里查实现
+
+      FAIL 条件：
+      - build 失败
+      - 测试数增量 < 4
+      - dream init 失败或没创建 4 个 wiki 子目录
+      - 单源 candidate 没留在 .candidate
+
+      VERDICT: PASS / FAIL
+
+  # ============================================================
+  # 轨道 C — raw chmod 只读
+  # ============================================================
+  - id: raw-readonly-mechanism
+    title: 'raw/ chmod 只读机制 (arch doc 第 1 节"把原则变成机制")'
+    assigned_to: coder
+    timeout_ms: 1500000
+    prompt: |
+      工作目录: /Users/biomatrix/Desktop/APP/DreamVault
+      已读 docs/ARCHITECTURE.md 第 0.1 / 第 1 节最后一段。
+
+      ## 目标
+      把 arch doc 第 1 节"raw/ 在文件系统层面挂为只读（app 启动时 chmod，
+      dream 引擎对它只有读权限）"实现到位 — 这是 arch doc 显式说"把原则 1 变成
+      机制而非自觉"。
+
+      ## 范围
+
+      1. **RawReadonlyGuard** (新建 Sources/DreamEngine/RawReadonlyGuard.swift)
+         - `static func makeReadonly(vaultRoot: URL) throws`
+           - 对 raw/ 整个子树 chmod -R u-w,g-w （保留 x 因为要 traverse）
+           - 实际命令：FileManager.setAttributes([.posixPermissions: 0o555], ofItemAtPath:)
+             对 raw/ 下所有 .md 文件
+         - `static func isReadonly(vaultRoot: URL) -> Bool`
+           - 检查 raw/ 下 .md 文件是否都不可写
+         - 跳过权限错误的项不抛（macOS 上 root / SIP 影响），记 stderr
+
+      2. **DreamCycle 集成** (Sources/DreamEngine/DreamCycle.swift)
+         - gather 阶段之前调一次 `RawReadonlyGuard.makeReadonly`
+         - 启动时（CLI `dream run`）也调一次
+
+      3. **Gatherer 拒绝写回 raw** (Sources/DreamEngine/Gatherer.swift)
+         - 在 parseFrontmatter 后，如果 doc.fields["processed"]?.lowercased() == "true"
+           且 `RawReadonlyGuard.isReadonly(vaultRoot)` 是 true：
+           抛 `GathererError.attemptToModifyRaw` —— 不允许 dream 把"processed"标 true 写回
+           （arch doc 第 3.1 步说要标，但与第 0.1 节"永远只读"冲突；本任务以第 0.1 优先，
+           保留 .dream/processed.json 作为唯一 processed 状态源 — 跟当前实现一致）
+         - 在 deliverable.md 显式记录这个冲突的取舍
+
+      4. **SwiftUI 启动时也 chmod** (Sources/dream/Entry.swift)
+         - AppDelegate.applicationDidFinishLaunching 调一次 RawReadonlyGuard.makeReadonly
+
+      ## 不要做
+      - 不动 Persister / Consolidator / LLMProvider / GitRunner
+
+      ## 验证（自己跑）
+      1. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dvsw_build 2>&1 | tail -5
+      2. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dtst 2>&1 | tail -5
+         （要求新增 ≥3 个测试：makeReadonly 改权限 / isReadonly 正确返回 /
+          权限非 0o644 后仍可读 / Gatherer 抛 readonly 错）
+      3. 手动 spot check：
+         mkdir -p /tmp/rawperm-$$/raw && touch /tmp/rawperm-$$/raw/x.md && chmod 644 /tmp/rawperm-$$/raw/x.md
+         cd /Users/biomatrix/Desktop/APP/DreamVault
+         .build/release/dream run --vault /tmp/rawperm-$$ --llm mock --verbose 2>&1 | head -10
+         之后 stat -f "%Sp" /tmp/rawperm-$$/raw/x.md
+         应得 -r-xr-xr-x  （不可写）
+         写测试最后清掉
+
+      ## deliverable
+      - 改动文件
+      - 新增测试
+      - test 输出尾 5 行
+      - 手动 chmod 验证输出
+      - git commit hash
+      - arch doc 冲突的取舍说明（3.1 vs 0.1）
+
+    verified_by: verifier
+    verify_prompt: |
+      独立验证 track C：
+
+      1. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dvsw_build 2>&1 | tail -3
+      2. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dtst 2>&1 | tail -5
+         测试数 >= track B 末态 + 3
+      3. 手动复现：mkdir -p /tmp/cverify-$$/raw && echo "x" > /tmp/cverify-$$/raw/y.md && chmod 644 /tmp/cverify-$$/raw/y.md
+         跑 dream run --vault /tmp/cverify-$$ --llm mock
+         然后 stat -f "%Sp" /tmp/cverify-$$/raw/y.md
+         必须 不可写（不含 'w' 在 owner 段）
+      4. 尝试 echo "tamper" > /tmp/cverify-$$/raw/y.md
+         必须失败（permission denied）
+      5. grep "RawReadonlyGuard" Sources/DreamEngine/DreamCycle.swift 必须有调用
+      6. grep "RawReadonlyGuard" Sources/dream/Entry.swift 必须在 AppDelegate 里调用
+
+      FAIL：build fail / 测试数不增 / chmod 不生效 / 任何调用点缺失
+
+      VERDICT: PASS / FAIL
+
+  # ============================================================
+  # Gate — 全量 e2e + 真实 vault 回放
+  # ============================================================
+  - id: e2e-gate
+    title: 'e2e 验证：A+B+C 三轨道全部 PASS 后，跑真实 vault 端到端'
+    assigned_to: verifier
+    depends_on: [persister-wiki-three-dirs, config-and-evidence-threshold, raw-readonly-mechanism]
+    role: verify-as-task
+    timeout_ms: 1500000
+    prompt: |
+      ## 目标
+      A/B/C 全部交付后，跑一次真实 vault 端到端 + 全测试，作为 plan-exit gate。
+
+      ## 步骤
+      1. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dvsw_build 2>&1 | tail -3
+         必须 Build complete
+      2. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dtst 2>&1 | tail -5
+         必须 Executed N tests, with 0 failures
+         N 应 >= 64（56 旧 + 5+4+3+ 新增）
+      3. cd /Users/biomatrix/Desktop/APP/DreamVault && /tmp/dvbuild_release 2>&1 | tail -3
+         release 也必须 build
+      4. 真实 vault 端到端：
+         ~/.dreamvault/raw/ 当前有 4 个文件
+         - raw/2026-06-09-engineering-notes.md
+         - raw/2026-06-10-product-sync.md
+         - raw/2026-06-11-e2e-test.md
+         - raw/2026-06-11-swiftui-debug.md
+         先 git status 确认工作区干净（无 raw 改动），否则 .dreamvault 是脏的预检会拒
+         .build/release/dream run --vault ~/.dreamvault --llm ollama --verbose
+         验证：
+         - commit 数 +1
+         - 新 commit stat 只含 .dream/ 和 wiki/ 路径，无 raw 污染
+         - wiki/{entities,concepts,syntheses}/ 至少有一个非空 .md 文件
+         - .dream/config.json 存在（或被 dream 自动创建）
+         - raw/ 下文件 stat 仍为不可写
+      5. 跑一次 mock + small vault 验证 evidence threshold：
+         mkdir -p /tmp/et-$$/raw && cat > /tmp/et-$$/raw/single.md <<'EOF'
+         ---
+         processed: false
+         ---
+         just one observation
+         EOF
+         cd /tmp/et-$$ && git init -q && git -c user.name=ci -c user.email=ci@local commit --allow-empty -m init -q
+         /Users/biomatrix/Desktop/APP/DreamVault/.build/release/dream run --vault /tmp/et-$$ --llm mock --verbose
+         验证：候选 memory status 应是 .candidate 不是 .durable（单源不达 ≥2 阈值）
+
+      ## PASS 条件（任一失败即 FAIL）
+      - build / release-build / test 全过
+      - 真实 vault 跑通 + commit stat 干净
+      - 单源 vault 跑通 + 不升 durable
+      - raw 仍不可写
+
+      ## deliverable
+      写在 ~/.dreamvault/.dream/e2e-gate-report.md 或 stdout：
+      - build / test / e2e 三段输出关键行
+      - PASS / FAIL
+      - 失败时具体到 file:line

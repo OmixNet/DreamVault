@@ -9,7 +9,7 @@ export PATH="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.
 swift test
 ```
 
-跑全套单元测试 + 集成测试：**51/51 通过**（Decayer 6 / Consolidator 4 + 14 / ContradictionDetector 3 / Redactor 5 / DreamCycle 7 / DreamCLI 11）。
+跑全套单元测试 + 集成测试：**184/184 通过**（v0.2.0 全部 4 任务编辑器升级 + P0 入口修复后的总数）。
 
 > **环境提示**：本机若 `swift` driver spawn 子命令失败（找不到 `swift-test` 等），需把 Xcode toolchain 加进 PATH。
 > 这是因为 `/usr/bin/swift`（Apple CLT）只是个 multi-call driver，真正的 `swift-test` / `swift-build` 在 Xcode toolchain 里。
@@ -152,6 +152,97 @@ bash scripts/uninstall.sh --purge   # 全清
 
 - GitHub: <https://github.com/OmixNet/DreamVault>
 - 协议：MIT（待定，可改）
+
+## v0.2.0 — Editor 升级 + P0 入口修复
+
+![DreamVault v0.2.0 — 4 栏布局 + 顶栏 Git banner](docs/screenshots/v0.2.0-launch.jpg)
+
+
+
+**核心改动**：用 NSTextView 替换 SwiftUI `TextEditor`、加 frontmatter inspector、git-aware 顶栏 banner；默认入口走 GUI 不再需要 `app` 子命令。
+
+### 4 个串行 worktree 任务
+
+每个任务独立 worktree (`/tmp/dv-t<N>` + `feat/t<N>-<topic>` 分支)，worktree 测过 + merge 回 main + 删 worktree 才开下一个，避免 3-coder 并行改同一棵 working tree 的冲突。
+
+| 任务 | 主题 | 关键文件 | +测试数 | 累计 |
+|------|------|----------|---------|------|
+| T0 | 编辑器引擎基建 | `DreamEngine/FrontmatterParser.swift` · `MarkdownRenderer.swift` · `WikilinkIndex.swift` | 39 | 83 → 124 |
+| T1 | NSTextView 替换 TextEditor | `dream/NSTextViewRepresentable.swift` · `EditorState.swift` · `EditorPane.swift` | 13 | 124 → 137 |
+| T2 | Frontmatter Inspector + TitleResolver | `DreamEngine/TitleResolver.swift` · `dream/FrontmatterInspector.swift` | 24 | 137 → 161 |
+| T3 | Git status banner + diff viewer | `DreamEngine/GitStatusParser.swift` · `DiffGenerator.swift` · `dream/GitStatusBanner.swift` | 23 | 161 → 184 |
+
+### T0 编辑器引擎基建
+
+把"编辑器"从"TextEditor + 几个模型"升级成有完整数据流的引擎层：
+
+- **FrontmatterParser** — 4 种 YAML value 类型（`string` / `number` / `bool` / `null` / `stringList` / `intList` / `object`），`Document` 保留 `orderedKeys` 顺序，`parse(_:)` 解析 + `render(_:)` 序列化（round-trip 保持字段顺序）
+- **MarkdownRenderer** — H1-H6 / `***bold-italic***` / fenced code / wikilink / quote / list / hr → `NSAttributedString`；SwiftUI 集成 `Text(AttributedString(ns))`
+- **WikilinkIndex** — vault 扫描（排除 `raw/` `.git/` `.build/` `.swiftpm`），`extractWikilinks(from:)` 字符数组版（避 `String.Index` OOB），`backLinks(for:)` 反向链，`resolveTarget(_:)` 大小写不敏感
+- **38 个新测试**（FrontmatterParser 11 / MarkdownRenderer 8 / WikilinkIndex 14 / WikilinkRender 5）
+
+### T1 NSTextView 替换 TextEditor
+
+SwiftUI `TextEditor` 在 macOS 13 上有 selection 跳、scroll 跳、undo 丢、Find 缺失四大问题。换成真 `NSTextView` 包成 `NSViewRepresentable`：
+
+- **NSTextViewRepresentable** — `Binding<String>` + `isEditable: Bool` + `onCommit/onDirtyChange` 回调；`updateNSView` 用 `lastSeenExternalText` 缓存避免每次 SwiftUI re-render 都重写 string
+- **EditorState** — `currentFile / buffer / isDirty / mode` 四个 `@Published`；autosave 用 `PassthroughSubject.debounce(1.5s)`，`autosaveDelay` didSet 时 cancel + reinstall pipeline；`openFile` 触发旧文件 `flushIfDirty(cancel:)` 再清空；`isRaw` 时 `isEditable=false` + 强制 `.preview` mode
+- **EditorPane** — 3 模式：`.source`（纯 NSTextView）/ `.preview`（MarkdownRenderer NSAttributedString）/ `.split`（HSplitView 左右）；header 状态条 `• 未保存` / `已保存` / `READ-ONLY`；`Cmd-S` 强制写盘
+- **13 个 EditorState 状态机测试**（autosave debounce / 取消 / dirty 切换 / 切文件 flush / raw 强制预览 / mode 切换）
+
+新增 test target `Tests/DreamTests/` 给 `dream` executable（之前只有 `DreamEngineTests`）。
+
+### T2 Frontmatter Inspector + TitleResolver
+
+editor 中栏光看 markdown 没法改 frontmatter。右侧 4 栏 Inspector 暴露 + TitleResolver 解决"这个文件叫什么名字"的根本问题。
+
+- **TitleResolver** — `classify(relPath:)` → `raw / wikiMemory / memoryMd / plainNote` 四类；`canRename(relPath:)` raw 永远 false（arch doc 0.1）；`displayTitle(relPath:frontmatter:body:)` 优先级 `frontmatter.title` > `firstH1` > 文件名（去 `.md`）；raw 不解析 frontmatter；`suggestFilename(from:)` → kebab-case
+- **FrontmatterInspector** — SwiftUI 面板：按 `orderedKeys` 顺序展示 key-value，每行点 value 进编辑模式；addFieldBar 加字段；Apply 按钮通过 `rebuildBuffer(original:newDoc:)` 写回 buffer（走 autosave，不直写 disk）；raw 文件整个面板禁用并显示 "raw 不可编辑"；底部 `TitleResolver.displayTitle` 输出"显示标题"
+- **MainView 升 4 栏**：`VaultBrowser / EditorPane / FrontmatterInspector / DreamPanel`；`@StateObject editorState` 提到 MainView 让 Inspector 和 EditorPane 共享同一实例
+- **24 个测试**（TitleResolver 19：classify 4 / canRename 3 / displayTitle 5 / firstH1 4 / suggestFilename 3；FrontmatterInspector 5：rebuildBuffer 序列化 / round-trip / 嵌套对象保留）
+
+### T3 Git status banner + diff viewer
+
+editor 之前是 vault 状态的"盲人"——dream run 中用户手动改文件，editor 看不到。新加顶栏 banner 让 editor 实时感知 git 状态。
+
+- **GitStatusParser** — 解析 `git status --porcelain` v1 输出（固定 2 字符状态字段：X=index/Y=worktree，空格补位）；状态映射 `conflict (UU/AA/DD/AU/UA/DU/UD) / staged (X∈AMDRC) / modified (X=空格 + Y∈MD) / untracked (??) / ignored (!!) 视为 clean`；rename 形式 `old -> new` 取 RHS
+- **DiffGenerator** — 纯 Swift LCS unified diff，O(m·n) DP；`splitLines` 抹平 `""` 和 `"\n"` 边界（不然 empty diff 算成 1 add + 1 remove）；`isEmpty = addedCount + removedCount == 0`（context 行不算）
+- **GitStatusBanner** — 顶栏 SwiftUI：绿/橙/红三态 + 系统图标 + 标签 + `+N −N` 摘要；conflict 时三按钮 `Keep Mine / Keep Theirs / Open Raw`；raw 文件禁用 mine/theirs 走 Open Raw（arch doc 0.1 不可改）
+- **GitStatusWatcher** — `@MainActor ObservableObject`，缓存整个 vault 的 git 状态 + per-file diff；MainView 在 `onAppear` / `onChange(selectedFile)` / `onChange(buffer)` 三处触发 refresh/updateDiff
+- **23 个测试**（GitStatusParser 13：v1 porcelain 各种状态字符组合 / rename / 空格 / ignored；DiffGenerator 8：identical / add / remove / replace / empty / 顺序保持）
+
+### P0 入口修复（同期合并）
+
+CLI/GUI 路由混乱的根因是 `argv[1] == "app"` 这种隐式契约。改成**默认 GUI** + 显式 CLI 子命令白名单：
+
+- **Entry.swift** — `cliSubcommands = ["run", "rollback", "status", "report", "help", "version"]`；argv[1] 不在白名单 → GUI；`--vault/-v <path>` 解析后写 `UserDefaults["DreamVaultInitialVault"]` 给 `AppModel.init` 读（`@StateObject` 不能传 init args）
+- **AppModel.switchVault(to:)** — 运行时换 vault
+- **scripts/build_and_run.sh --verify** — build tmp `.app` 到 `~/Applications/DreamVault-dev-<ts>.app`（不在 `/tmp`——macOS Launch Services 不信任 `/tmp`）→ `open -n` → log 到 `~/Library/Logs/DreamVault/dev-*.log` → 验证进程 args + window
+- **.codex/environments/environment.toml** — 8 项 contract（scripts/binary/default_vault/log_dir/test_command/exit_codes/routing）
+- **7 个新 EntryRoutingTests**
+
+### 验证流程
+
+```bash
+# 1. 测全过
+swift test              # → Executed 184 tests, with 0 failures
+
+# 2. GUI 起来不闪退
+bash scripts/build_and_run.sh --vault ~/.dreamvault --keep
+# → DreamVault-dev-<ts>.app 在 ~/Applications/，PID alive
+# → ps args 含 --vault <path>
+# → osascript 'get name of every window of process "DreamVault"' → DreamVault
+
+# 3. pkill 卸
+pkill -f "Contents/MacOS/DreamVault"
+```
+
+### 后续（v0.3 候选）
+
+- Wiki 跨链图（基于 WikilinkIndex + KnowledgeGraph 双向）
+- VaultSearch 跨 vault 全文搜索
+- dream-report 在 editor 里可点开
+- 备份策略 / 多 vault 切换 UI
 
 ## 致谢
 
