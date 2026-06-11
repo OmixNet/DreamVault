@@ -11,8 +11,17 @@ public final class EditorState: ObservableObject {
 
     /// 当前打开的文件（nil = 没选）
     @Published public var currentFile: URL? = nil
-    /// 当前 buffer 内容
-    @Published public var buffer: String = ""
+    /// 当前 buffer 内容。
+    /// 写入时会自动比较 lastSavedSnapshot 重算 isDirty，
+    /// 这样不仅是 NSTextView 路径（macOS Text Replacement / 外部 macro / 测试设值）
+    /// 都能正确标脏。
+    @Published public var buffer: String = "" {
+        didSet {
+            if oldValue != buffer {
+                isDirty = (buffer != lastSavedSnapshot)
+            }
+        }
+    }
     /// 是否有未保存修改
     @Published public var isDirty: Bool = false
     /// 模式：source / preview / split

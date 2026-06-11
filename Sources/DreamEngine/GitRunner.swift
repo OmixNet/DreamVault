@@ -38,7 +38,13 @@ public struct GitRunner {
             throw GitError(command: args, exitCode: p.terminationStatus,
                            stderr: err.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+        // P0-2 fix: 只 trim 尾部空白。**保留前导** —— v1 porcelain 的
+        // " M wiki/concepts/a.md"（X=空格，Y=M）开头就是空格，
+        // 之前 trimCharacters 会把前导空格吞掉让 parser 错把 X 解析为 'M'。
+        if let lastNonWhitespace = out.lastIndex(where: { !$0.isWhitespace }) {
+            return String(out[...lastNonWhitespace])
+        }
+        return ""
     }
 
     /// repoRoot 是否已是 git 仓库

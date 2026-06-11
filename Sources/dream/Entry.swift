@@ -77,6 +77,21 @@ struct DreamEntry {
         }
         return nil
     }
+
+    /// P0-3: GUI 启动期解析 vault 路径。和 AppModel.init 同一套优先顺序：
+    /// 1. UserDefaults["DreamVaultInitialVault"]（launchGUI 从 --vault 写入）
+    /// 2. DREAMVAULT_VAULT 环境变量
+    /// 3. ~/.dreamvault
+    /// 用在 AppDelegate 的 raw chmod 保护，确保自定义 vault 也能被挂只读。
+    static func resolveInitialVault() -> URL {
+        if let fromUserDefaults = UserDefaults.standard.string(forKey: "DreamVaultInitialVault") {
+            return URL(fileURLWithPath: fromUserDefaults, isDirectory: true)
+        }
+        if let env = ProcessInfo.processInfo.environment["DREAMVAULT_VAULT"] {
+            return URL(fileURLWithPath: env, isDirectory: true)
+        }
+        return URL(fileURLWithPath: NSHomeDirectory() + "/.dreamvault", isDirectory: true)
+    }
 }
 
 // MARK: - SwiftUI App
@@ -100,9 +115,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 架构第 1 节末段："app 启动时 chmod" —— GUI 启动就把 raw/ 挂为只读。
         // DreamCycle.runOnce 也会再调一次，但 GUI 启动到第一次 Run Dream 之间这段时间
         // 也得守住（用户可能手动编辑 raw/、外部编辑器可能打开 raw/）。
-        let vaultRoot = (ProcessInfo.processInfo.environment["DREAMVAULT_VAULT"])
-            .map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? URL(fileURLWithPath: NSHomeDirectory() + "/.dreamvault", isDirectory: true)
+        // P0-3: 必须用与 AppModel 一致的 vault 解析顺序（--vault UserDefaults > env > default），
+        // 否则 --vault 自定义 vault 在启动后没有 raw chmod 保护
+        let vaultRoot = DreamEntry.resolveInitialVault()
         try? RawReadonlyGuard.makeReadonly(vaultRoot: vaultRoot)
         FileHandle.standardError.write(Data("[DreamVault] RawReadonlyGuard applied at \(vaultRoot.path)/raw\n".utf8))
         // SwiftUI 的 WindowGroup 在 macOS 13 SwiftPM 编译产物下经常因为

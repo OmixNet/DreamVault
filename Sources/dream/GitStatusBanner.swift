@@ -122,10 +122,14 @@ public final class GitStatusWatcher: ObservableObject {
     @Published public private(set) var statuses: [String: GitFileStatus.State] = [:]
     @Published public private(set) var diffs: [String: DiffGenerator.Result] = [:]
     @Published public private(set) var totalModified: Int = 0
+    /// P0-2: 缓存 vault root 用于把绝对 URL 转换成 git 期望的 vault-relative 路径
+    /// （git status --porcelain 用 "wiki/concepts/a.md" 而不是 "a.md"）
+    @Published public private(set) var vaultRoot: URL?
 
     public init() {}
 
     public func refresh(vaultRoot: URL) {
+        self.vaultRoot = vaultRoot
         let git = GitRunner(repoRoot: vaultRoot)
         guard let porcelain = try? git.statusPorcelain() else {
             self.statuses = [:]
@@ -137,18 +141,27 @@ public final class GitStatusWatcher: ObservableObject {
     }
 
     public func status(for url: URL) -> GitFileStatus.State {
-        let rel = relPath(of: url)
+        guard let rel = relPath(of: url) else { return .clean }
         return statuses[rel] ?? .clean
     }
 
+    /// 测试 seam：直接注入 statuses 跳过 git 子进程。生产代码不调。
+    #if DEBUG
+    internal func _setStatusesForTest(_ map: [String: GitFileStatus.State], vaultRoot: URL) {
+        self.vaultRoot = vaultRoot
+        self.statuses = map
+        self.totalModified = map.count
+    }
+    #endif
+
     public func diffSummary(for url: URL) -> (added: Int, removed: Int)? {
-        guard let result = diffs[relPath(of: url)] else { return nil }
+        guard let rel = relPath(of: url), let result = diffs[rel] else { return nil }
         return (result.addedCount, result.removedCount)
     }
 
     public func updateDiff(for url: URL, vaultRoot: URL) {
-        let rel = relPath(of: url)
-        guard let result = computeDiff(for: url, vaultRoot: vaultRoot) else {
+        guard let rel = relPath(of: url) else { return }
+        guard let result = computeDiff(for: url, rel: rel, vaultRoot: vaultRoot) else {
             diffs.removeValue(forKey: rel)
             return
         }
@@ -156,9 +169,8 @@ public final class GitStatusWatcher: ObservableObject {
     }
 
     /// 调 git show HEAD:<file> 拿 committed 版本 + 读当前 on-disk → 算 diff
-    private func computeDiff(for url: URL, vaultRoot: URL) -> DiffGenerator.Result? {
+    private func computeDiff(for url: URL, rel: String, vaultRoot: URL) -> DiffGenerator.Result? {
         let git = GitRunner(repoRoot: vaultRoot)
-        let rel = relPath(of: url)
         // HEAD 版本（可能空 = 新文件）
         let headContent: String
         if let data = try? git.run(["show", "HEAD:\(rel)"] as [String]) {
@@ -171,8 +183,13 @@ public final class GitStatusWatcher: ObservableObject {
         return DiffGenerator().diff(old: headContent, new: onDisk)
     }
 
-    private func relPath(of url: URL) -> String {
-        // 简化：用 lastPathComponent（GitRunner 已在 vault 内所以这是相对 vault root）
-        url.lastPathComponent
+    /// 把绝对 URL 转成 git 期望的 vault-relative 路径（"wiki/concepts/a.md"）。
+    /// url 不在 vaultRoot 下 → nil（上层按 .clean 处理）。
+    private func relPath(of url: URL) -> String? {
+        guard let root = vaultRoot else { return nil }
+        let rootPath = root.standardizedFileURL.path
+        let urlPath = url.standardizedFileURL.path
+        guard urlPath.hasPrefix(rootPath + "/") else { return nil }
+        return String(urlPath.dropFirst(rootPath.count + 1))
     }
 }
