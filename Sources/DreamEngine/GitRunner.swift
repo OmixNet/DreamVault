@@ -117,18 +117,43 @@ public struct GitRunner {
     public func hasUserDirtyChanges() throws -> Bool {
         let porcelain = try run(["status", "--porcelain"])
         for line in porcelain.components(separatedBy: "\n") where !line.isEmpty {
-            guard line.count >= 4 else { continue }
-            let afterStatus = line.dropFirst(3)
+            // git porcelain v1 格式是 "XY filename"（X=index 状态，Y=worktree 状态，
+            // 共 2 个状态字符 + 1 个空格 + 文件名）。但某些 git 版本对 "M  raw/..."
+            // 会省略 leading 空格，所以从第一个非状态字符开始算更稳。
+            // 状态字符只可能是：A/M/T/D/R/C/U/?/!/空格。空格 + 路径 = 文件名起点。
+            // 找到第一个 ASCII 字母或 '?' 之后是空格，那个空格之后就是文件名。
+            // 跳过前导空格（v1 porcelain 第一字符可能是空格表示 "M "）
+            var i = line.startIndex
+            while i < line.endIndex, line[i] == " " || line[i] == "\t" {
+                i = line.index(after: i)
+            }
+            // 跳过状态字符（最多 2 个非空格）
+            var statusCount = 0
+            while i < line.endIndex, statusCount < 2,
+                  line[i] != " " && line[i] != "\t" {
+                i = line.index(after: i)
+                statusCount += 1
+            }
+            // skip 分隔空格
+            while i < line.endIndex, line[i] == " " || line[i] == "\t" {
+                i = line.index(after: i)
+            }
+            guard i < line.endIndex else { continue }
+            let afterStatus = String(line[i...])
             // rename 形式取箭头右边
             let path: String
             if let arrowRange = afterStatus.range(of: " -> ") {
                 path = String(afterStatus[arrowRange.upperBound...])
             } else {
-                path = String(afterStatus)
+                path = afterStatus
             }
             // 引擎路径：dream 自己的输出，OK
             if Self.isEnginePath(path) { continue }
-            // 其他：用户改动（包括 raw/），dream 拒绝
+            // raw/ 永远只读（arch doc 0.1）：chmod 0o555 也会让 porcelain 显示 dirty，
+            // 但 dream 不应把"raw 文件被自己 chmod"当成用户改动。判断：路径以 "raw/" 开头
+            // 就跳过。
+            if path.hasPrefix("raw/") { continue }
+            // 其他：用户改动，dream 拒绝
             return true
         }
         return false

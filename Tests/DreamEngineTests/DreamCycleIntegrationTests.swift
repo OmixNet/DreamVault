@@ -319,7 +319,11 @@ final class DreamCycleIntegrationTests: XCTestCase {
         content += "\n\n## 用户的笔记\n\n手写内容，dream 不应该拒绝。\n"
         try content.write(to: memoryURL, atomically: true, encoding: .utf8)
 
-        // 再跑一次 — 应该跑通（因为 dirty 的是引擎路径）
+        // 再跑一次 — 应该跑通（因为 dirty 的是引擎路径）。
+        // raw/ 在第一轮后被 RawReadonlyGuard chmod 0o555；先 chmod +w 才能再扔文件进来。
+        let rawDir = tempDir.appendingPathComponent("raw")
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o755)], ofItemAtPath: rawDir.path)
         _ = try writeRaw("2026-06-11-engineDirty2.md", body: "第二轮 raw")
         let outcome = try await cycle.runOnce(now: now)
         XCTAssertEqual(outcome.gatheredCount, 1)

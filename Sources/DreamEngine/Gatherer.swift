@@ -9,7 +9,44 @@ import Foundation
 ///   `.dream/processed.json`（相对路径列表），由 DreamCycle 在成功 commit 时更新。
 ///   一个文件是候选，当且仅当 frontmatter 标 processed:false 且不在该清单中。
 /// - 进入候选集前先过 Redactor（隐私脱敏只作用于副本，原文件不动）。
+///
+/// 架构文档冲突的取舍（deliverable.md 详述）：
+///   - 第 3.1 节"raw 候选标 processed:true" 与第 0.1 节"raw/ 永远只读" 冲突。
+///   - 本实现以第 0.1 节优先：raw/ 在文件系统层挂为只读（见 RawReadonlyGuard），
+///     Gatherer 永不写回 raw；processed 状态唯一来源是 `.dream/processed.json`。
+///   - 防御性接口 `assertWillNotWriteBackToRaw(vaultRoot:)`：任何未来"想往 raw 写"
+///     的代码路径都应先调它；若 raw 已被挂只读，立即抛 `attemptToModifyRaw`。
 public struct Gatherer {
+
+    /// Gatherer 抛出的错误。`attemptToModifyRaw` 是对架构原则 1 的硬保险：
+    /// 若 raw/ 已被挂只读，任何想把 processed 写回 raw 的尝试都立刻抛错，
+    /// 不让"原则 1 变成机制"被旁路。
+    public enum GathererError: Error, CustomStringConvertible, Equatable {
+        /// 调用方尝试在 raw/ 已挂只读时把 processed 写回 raw 文件。
+        case attemptToModifyRaw(file: String)
+
+        public var description: String {
+            switch self {
+            case .attemptToModifyRaw(let file):
+                return "Gatherer: 试图把 processed 写回 raw/\(file) —— raw/ 在文件系统层已挂只读（架构原则 1）。已处理状态应写入 .dream/processed.json 而非 raw frontmatter。"
+            }
+        }
+    }
+
+    /// 防御性闸门：raw/ 已被 RawReadonlyGuard 挂只读时，任何想要"写回 raw"的
+    /// 代码路径都应先调本函数。它会在 raw 是只读状态时立刻抛错。
+    ///
+    /// 当前实现里 Gatherer.gather() 不写回 raw（processed 状态走 .dream/processed.json），
+    /// 所以这个闸门更多是给"未来可能的 refactor"留的兜底：
+    /// 一旦有人加回"写 processed:true 到 raw"的逻辑，先撞到这里就会立刻炸。
+    ///
+    /// - Parameter vaultRoot: vault 根目录
+    /// - Parameter file: 试图写回的 raw 文件名（仅用于错误信息）
+    public static func assertWillNotWriteBackToRaw(vaultRoot: URL, file: String) throws {
+        if RawReadonlyGuard.isReadonly(vaultRoot: vaultRoot) {
+            throw GathererError.attemptToModifyRaw(file: file)
+        }
+    }
 
     public let vaultRoot: URL
     public let redactor: Redactor
@@ -52,8 +89,13 @@ public struct Gatherer {
             guard !processed.contains(relPath) else { continue }
             let content = try String(contentsOf: file, encoding: .utf8)
             let doc = Self.parseFrontmatter(content)
-            // 只收 frontmatter 显式标 processed:false 的
-            guard doc.fields["processed"]?.lowercased() == "false" else { continue }
+            // frontmatter 协议（arch doc 0.1 / §1）：
+            //   - 显式 `processed: false` → 待处理，必收
+            //   - 显式 `processed: true`  → 已处理，跳过
+            //   - 无 frontmatter           → 保守按"未声明"对待（任何没主动标记
+            //                                 处理过的 raw 文件都应被 dream 看到）
+            let flag = doc.fields["processed"]?.lowercased()
+            if flag == "true" { continue }
 
             let body = doc.body.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !body.isEmpty else { continue }

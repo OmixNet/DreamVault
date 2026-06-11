@@ -59,11 +59,14 @@ public final class MockLLMProvider: LLMProvider, @unchecked Sendable {
 public struct OllamaProvider: LLMProvider, Sendable {
     public let baseURL: URL
     public let model: String
+    public let apiKey: String?
 
     public init(baseURL: URL = URL(string: "http://127.0.0.1:11434")!,
-                model: String = "llama3.1") {
+                model: String = "llama3.1",
+                apiKey: String? = nil) {
         self.baseURL = baseURL
         self.model = model
+        self.apiKey = apiKey
     }
 
     public enum OllamaError: Error, CustomStringConvertible {
@@ -88,6 +91,9 @@ public struct OllamaProvider: LLMProvider, Sendable {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let apiKey, !apiKey.isEmpty {
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
         req.timeoutInterval = 120
 
         let body: [String: Any] = [

@@ -59,6 +59,10 @@ public struct Persister {
     public func persist(_ input: Input) throws -> Outcome {
         var ledger = input.ledger
 
+        // 0. 确保 wiki/ 下 4 个子目录都存在（架构文档第 1 节）：
+        //    entities / concepts / syntheses / archive
+        try ensureWikiDirs()
+
         // 1. 应用衰减动作：archive → 降级（绝不物理删除）；needsReview 只记录、交人工
         let actionByID = Dictionary(uniqueKeysWithValues: input.decayResults.map { ($0.memoryID, $0.action) })
         var archivedIDs: [String] = []
@@ -88,21 +92,32 @@ public struct Persister {
             ledger.memories[i].inboundLinks = inbound[ledger.memories[i].id] ?? 0
         }
 
-        // 3. wiki 页：durable 写 concepts；本次归档的写 archive 并删 concepts 页
+        // 2b. 矛盾建链：把 contradicts 同步进 relatedTo（双向），并把相关条目的
+        //     relatedTo 也补上 id。避免扫整盘 graph 算 related 时再去 lookup。
+        syncRelatedTo(in: &ledger.memories)
+
+        // 3. wiki 页：durable 按 kind 写到 entities/concepts/syntheses 对应目录；
+        //    归档的写到 archive/，并删除原 kind 目录的页（如果有的话）。
         var wikiWritten: [String] = []
         let textByID = Dictionary(uniqueKeysWithValues: ledger.memories.map { ($0.id, $0.text) })
+        // kindByID 让 wikilink 渲染时知道对方在哪个子目录 → 双向 contradicts 链接
+        // 才能正确写成 `[[wiki/{kind(b)}/{b}]]`，而不是 fallback 到 concepts/。
+        let kindByID = Dictionary(uniqueKeysWithValues: ledger.memories.map { ($0.id, $0.kind) })
         for m in ledger.memories where m.status == .durable {
-            let rel = "wiki/concepts/\(m.id).md"
+            let rel = Self.wikiRelPath(for: m)
             try write(wikiPage(for: m, related: relatedByID[m.id] ?? [], textByID: textByID,
-                               now: input.now), to: rel)
+                               now: input.now, kindByID: kindByID), to: rel)
             wikiWritten.append(rel)
         }
         for m in ledger.memories where archivedIDs.contains(m.id) {
             let rel = "wiki/archive/\(m.id).md"
             try write(archivePage(for: m, now: input.now), to: rel)
             wikiWritten.append(rel)
-            let concepts = vaultRoot.appendingPathComponent("wiki/concepts/\(m.id).md")
-            try? FileManager.default.removeItem(at: concepts)
+            // 归档后从原 kind 目录删页（可能在 entities/concepts/syntheses 任一处）
+            for kind in MemoryKind.allCases {
+                let oldPage = vaultRoot.appendingPathComponent(Self.wikiRelPath(for: m, kind: kind))
+                try? FileManager.default.removeItem(at: oldPage)
+            }
         }
 
         // 4. MEMORY.md 增量合并（非追加）
@@ -200,11 +215,86 @@ public struct Persister {
 
     // MARK: - wiki 页渲染
 
+    /// 把 memory id 映射到对应 wiki 子目录的相对路径（arch doc 第 1 节三目录约定）。
+    /// 传 `kind:` 时按指定 kind 走（用于"归档时从原 kind 目录删旧页"），不传则按 m.kind。
+    /// 注意：**m.status==.archived 不应让本函数返回 archive/ 路径** —— 归档页由 caller
+    /// 显式写到 archive/，本函数仅用于"按 kind 删除原页"等 kind-aware 场景。
+    static func wikiRelPath(for m: Memory, kind: MemoryKind? = nil) -> String {
+        let k = kind ?? m.kind
+        switch k {
+        case .entity:    return "wiki/entities/\(m.id).md"
+        case .concept:   return "wiki/concepts/\(m.id).md"
+        case .synthesis: return "wiki/syntheses/\(m.id).md"
+        }
+    }
+
+    /// dream 第 0 步：保证 4 个 wiki 子目录都存在（arch doc 第 1 节硬性要求）
+    func ensureWikiDirs() throws {
+        for sub in ["wiki/entities", "wiki/concepts", "wiki/syntheses", "wiki/archive"] {
+            let url = vaultRoot.appendingPathComponent(sub)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+    }
+
+    /// 矛盾 / 相关链接双向同步：把 a.contradicts 里的 id 也加进 b.contradicts
+    /// （双向），并把所有 contradicts / relatedTo id 也补进双方的 relatedTo
+    /// （统一以 relatedTo 表达"互相引用"，避免 wikilink 渲染时再扫 graph）。
+    /// 收敛迭代 ≤8 次，复杂度 O(N²) 但 memories 通常 < 1k。
+    func syncRelatedTo(in memories: inout [Memory]) {
+        var byID = Dictionary(uniqueKeysWithValues: memories.map { ($0.id, $0) })
+        var changed = true
+        var iter = 0
+        while changed && iter < 8 {
+            changed = false
+            iter += 1
+            for a in byID.values {
+                // 1. contradicts 双向补齐
+                for b in a.contradicts where byID[b] != nil && !byID[b]!.contradicts.contains(a.id) {
+                    byID[b]!.contradicts.append(a.id)
+                    changed = true
+                }
+                // 2. contradicts 同时也是 relatedTo 的一种：补到双方 relatedTo
+                for b in a.contradicts where byID[b] != nil && !byID[b]!.relatedTo.contains(b) {
+                    byID[b]!.relatedTo.append(b)
+                    changed = true
+                }
+                for b in a.contradicts where byID[b] != nil && !a.relatedTo.contains(b) {
+                    byID[a.id]!.relatedTo.append(b)
+                    changed = true
+                }
+                // 3. relatedTo 双向补齐
+                for b in a.relatedTo where byID[b] != nil && !byID[b]!.relatedTo.contains(a.id) {
+                    byID[b]!.relatedTo.append(a.id)
+                    changed = true
+                }
+            }
+        }
+        memories = Array(byID.values)
+    }
+
+    /// 把对方 id 渲染成可点击的 wikilink：知道对方在哪个 kind 子目录就写到对应路径，
+    /// 不知道则默认 wiki/concepts/。这样 ## 相关 和 ## 矛盾 双向都能正确跳转。
+    static func wikilink(forMemoryID id: String, kindByID: [String: MemoryKind]) -> String {
+        let path: String
+        if let k = kindByID[id] {
+            switch k {
+            case .entity:    path = "wiki/entities/\(id)"
+            case .concept:   path = "wiki/concepts/\(id)"
+            case .synthesis: path = "wiki/syntheses/\(id)"
+            }
+        } else {
+            path = "wiki/concepts/\(id)"
+        }
+        return "[[\(path)]]"
+    }
+
     func wikiPage(for m: Memory, related: [(id: String, score: Double)],
-                  textByID: [String: String], now: Date) -> String {
+                  textByID: [String: String], now: Date,
+                  kindByID: [String: MemoryKind] = [:]) -> String {
         var out = """
         ---
         memory: \(m.id)
+        kind: \(m.kind.rawValue)
         status: \(m.status.rawValue)
         decayClass: \(m.decayClass.rawValue)
         updated: \(Self.stamp(now))
@@ -221,12 +311,12 @@ public struct Persister {
             out += "\n\n## 相关\n"
             out += related.map { r in
                 let hint = textByID[r.id].map { String($0.prefix(40)) } ?? ""
-                return "- [[\(r.id)]] (AA \(String(format: "%.2f", r.score))) \(hint)"
+                return "- \(Self.wikilink(forMemoryID: r.id, kindByID: kindByID)) (AA \(String(format: "%.2f", r.score))) \(hint)"
             }.joined(separator: "\n")
         }
         if !m.contradicts.isEmpty {
-            out += "\n\n## 矛盾（待人工裁决）\n"
-            out += m.contradicts.map { "- contradicts:: [[\($0)]]" }.joined(separator: "\n")
+            out += "\n\n## contradicts\n"
+            out += m.contradicts.map { "- \(Self.wikilink(forMemoryID: $0, kindByID: kindByID))" }.joined(separator: "\n")
         }
         return out + "\n"
     }

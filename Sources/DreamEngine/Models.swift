@@ -20,6 +20,19 @@ public enum MemoryStatus: String, Codable {
     case archived    // 被衰减降级，移入 archive，可找回
 }
 
+// MARK: - 记忆分类（架构文档第 1 节 wiki/{entities,concepts,syntheses}/）
+//
+// 决定 Persister 写到 wiki/ 哪个子目录。默认 .concept，向后兼容老 ledger。
+// 加新分类时同步更新 Memory.kindSafe / Persister.wikiRelPath 的 switch 即可。
+public enum MemoryKind: String, Codable, Sendable, CaseIterable {
+    case entity     // 实体页：人/项目/工具
+    case concept    // 概念页：抽象模式/规则
+    case synthesis  // 综合页：跨实体/概念的整合
+
+    /// 老 ledger 没 kind 字段时的默认（保持向后兼容）
+    public static let defaultKind: MemoryKind = .concept
+}
+
 // MARK: - 衰减类别（REFERENCE_SPEC 附录：τ = baseTau × 类型系数）
 
 public enum DecayClass: String, Codable, CaseIterable {
@@ -48,6 +61,11 @@ public struct Memory: Codable, Identifiable, Equatable {
     public var inboundLinks: Int            // 被多少 wiki 页引用
     public var contradicts: [String]        // 冲突教训的 id，交人工裁决
     public var decayClass: DecayClass       // 衰减类别，决定 τ 的类型系数
+    /// 记忆分类（架构文档第 1 节 wiki/{entities,concepts,syntheses}/）
+    public var kind: MemoryKind
+    /// 相关/矛盾的双向链接存储（id 列表）。避免扫整盘 graph 算 related 时再去 lookup。
+    /// 与 `contradicts` 不同：relatedTo 是"general"相关（含矛盾），contradicts 专指冲突。
+    public var relatedTo: [String]
 
     public init(id: String = UUID().uuidString,
                 text: String,
@@ -58,15 +76,20 @@ public struct Memory: Codable, Identifiable, Equatable {
                 reinforceCount: Int = 0,
                 inboundLinks: Int = 0,
                 contradicts: [String] = [],
-                decayClass: DecayClass = .normal) {
+                decayClass: DecayClass = .normal,
+                kind: MemoryKind = MemoryKind.defaultKind,
+                relatedTo: [String] = []) {
         self.id = id; self.text = text; self.sources = sources
         self.status = status; self.createdAt = createdAt
         self.lastAccess = lastAccess; self.reinforceCount = reinforceCount
         self.inboundLinks = inboundLinks; self.contradicts = contradicts
         self.decayClass = decayClass
+        self.kind = kind
+        self.relatedTo = relatedTo
     }
 
-    /// 自定义解码：旧 ledger.json 没有 decayClass 字段时默认 normal，保持向后兼容
+    /// 自定义解码：旧 ledger.json 没有 kind/relatedTo/decayClass 字段时
+    /// 给默认值，保持向后兼容
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
@@ -79,6 +102,9 @@ public struct Memory: Codable, Identifiable, Equatable {
         inboundLinks = try c.decode(Int.self, forKey: .inboundLinks)
         contradicts = try c.decode([String].self, forKey: .contradicts)
         decayClass = try c.decodeIfPresent(DecayClass.self, forKey: .decayClass) ?? .normal
+        // kind / relatedTo：旧 ledger 没有时按架构默认值回退
+        kind = try c.decodeIfPresent(MemoryKind.self, forKey: .kind) ?? MemoryKind.defaultKind
+        relatedTo = try c.decodeIfPresent([String].self, forKey: .relatedTo) ?? []
     }
 
     /// 独立来源数（按文件去重）——决定能否从 candidate 升为 durable

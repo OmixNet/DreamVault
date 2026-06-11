@@ -80,6 +80,10 @@ struct DreamCLI {
         let git = GitRunner(repoRoot: vault)
         let cycle = DreamCycle(vaultRoot: vault, llm: llm, git: git, dryRun: dryRun)
         do {
+            // 先把 raw/ 挂为只读（架构第 1 节末段："app 启动时 chmod"）。
+            // DreamCycle 内部也会再调一次，这里是 CLI 入口的显式保险——dryRun 也调，
+            // 因为 dryRun 仍然跑 gather，可能触发对 raw/ 的潜在写入。
+            try? RawReadonlyGuard.makeReadonly(vaultRoot: vault)
             let outcome = try await cycle.runOnce()
             if opts.verbose {
                 FileHandle.standardError.write(Data("dream run verbose report:\n".utf8))

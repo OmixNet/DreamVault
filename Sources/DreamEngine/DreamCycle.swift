@@ -93,7 +93,13 @@ public struct DreamCycle {
     /// 跑一次完整 dream。任何阶段失败都自动回滚已写文件。
     /// 失败时也返回完整 trace（已 gather 但未提交的内容），便于 dream-report 留痕。
     public func runOnce(now: Date = Date()) async throws -> Outcome {
-        // — 0. 确保 vault 是 git 仓库（事务边界前提）—
+        // — 0. 把 raw/ 挂为只读（架构第 1 节末段） —
+        // 这是"原则 1 变成机制"的入口。每次 dream 启动都强压一次，确保
+        // 任何在两次 dream 之间被 chmod +w 改动过的文件回到 0o555。
+        // 失败（EPERM 等）由 RawReadonlyGuard 内部静默 + stderr，不影响 dream 继续跑。
+        try? RawReadonlyGuard.makeReadonly(vaultRoot: vaultRoot)
+
+        // — 0a. 确保 vault 是 git 仓库（事务边界前提）—
         if let git {
             do { try git.initIfNeeded() } catch {
                 throw DreamError.gitNotConfigured

@@ -120,17 +120,21 @@ public struct Consolidator {
         public var tensionsWithExisting: [String]?
         public var recommendedLessonTexts: [String]?
         public var reasoning: String?
+        /// LLM 在 analyze 步推荐的 wiki 分类（架构文档第 1 节：entity/concept/synthesis）
+        public var recommendedKind: String?
 
         public init(keyEntities: [String]? = nil,
                     keyConcepts: [String]? = nil,
                     tensionsWithExisting: [String]? = nil,
                     recommendedLessonTexts: [String]? = nil,
-                    reasoning: String? = nil) {
+                    reasoning: String? = nil,
+                    recommendedKind: String? = nil) {
             self.keyEntities = keyEntities
             self.keyConcepts = keyConcepts
             self.tensionsWithExisting = tensionsWithExisting
             self.recommendedLessonTexts = recommendedLessonTexts
             self.reasoning = reasoning
+            self.recommendedKind = recommendedKind
         }
 
         // 容错访问：nil 给空集合
@@ -139,6 +143,10 @@ public struct Consolidator {
         public var tensionsSafe: [String] { tensionsWithExisting ?? [] }
         public var lessonsSafe: [String] { recommendedLessonTexts ?? [] }
         public var reasoningSafe: String { reasoning ?? "" }
+        /// 安全访问 recommendedKind：解析失败时回退到默认
+        public var kindSafe: MemoryKind {
+            MemoryKind(rawValue: (recommendedKind ?? "").lowercased()) ?? MemoryKind.defaultKind
+        }
     }
 
     /// generate 步 LLM 输出的"候选 Memory 草稿"（已带 source 引用 + decayClass 建议）
@@ -149,21 +157,31 @@ public struct Consolidator {
         public var sourceLine: Int?
         public var sourceExcerpt: String?
         public var decayClassRaw: String?
+        /// LLM 推荐的 wiki 分类：entity / concept / synthesis。无法识别时 fallback 到 defaultKind。
+        public var kindRaw: String?
 
         public init(text: String? = nil, sourceFile: String? = nil,
                     sourceLine: Int? = nil, sourceExcerpt: String? = nil,
-                    decayClassRaw: String? = nil) {
+                    decayClassRaw: String? = nil, kindRaw: String? = nil) {
             self.text = text
             self.sourceFile = sourceFile
             self.sourceLine = sourceLine
             self.sourceExcerpt = sourceExcerpt
             self.decayClassRaw = decayClassRaw
+            self.kindRaw = kindRaw
         }
 
         public var textSafe: String { text ?? "" }
         public var sourceFileSafe: String { sourceFile ?? "" }
         public var sourceLineSafe: Int { sourceLine ?? 0 }
         public var sourceExcerptSafe: String { sourceExcerpt ?? "" }
+        public var decayClassSafe: DecayClass {
+            DecayClass(rawValue: decayClassRaw ?? "") ?? .normal
+        }
+        /// 解析 LLM 输出的 kind 字符串，无法识别时回退到默认（向后兼容旧 LLM 输出）
+        public var kindSafe: MemoryKind {
+            MemoryKind(rawValue: (kindRaw ?? "").lowercased()) ?? MemoryKind.defaultKind
+        }
     }
 
     public enum Consolidate3StepError: Error, CustomStringConvertible {
@@ -186,12 +204,16 @@ public struct Consolidator {
         你是严格的分析师。先**思考**再回答。
         你的输出必须是合法 JSON（无 markdown 包裹），格式：
         {"keyEntities":[...], "keyConcepts":[...], "tensionsWithExisting":[...],
-         "recommendedLessonTexts":[...], "reasoning":"..."}
+         "recommendedLessonTexts":[...], "reasoning":"...",
+         "recommendedKind":"entity|concept|synthesis"}
         - keyEntities: 文中提到的关键实体（人/项目/工具/概念名）
         - keyConcepts: 抽象概念或模式
         - tensionsWithExisting: 与已知知识可能的矛盾点（无则空数组）
         - recommendedLessonTexts: 推荐提炼出的教训文本（每条 1 句，不超 80 字）
         - reasoning: 你的推理过程（让人能审查）
+        - recommendedKind: 推荐本页放到 wiki/ 哪个分类。
+            entity = 具体的人/项目/工具；concept = 抽象模式/规则；
+            synthesis = 跨多个 entity/concept 的整合。
         """
         let user = """
         候选观察文本：
@@ -218,11 +240,13 @@ public struct Consolidator {
         你是严格的提炼员。**只能**基于下面"分析"和"来源片段"提炼教训。
         你的输出必须是合法 JSON 数组（无 markdown 包裹），每个元素：
         {"text":"...", "sourceFile":"raw/xxx.md", "sourceLine":N, "sourceExcerpt":"...",
-         "decayClassRaw":"slow|normal|fast"}
+         "decayClassRaw":"slow|normal|fast", "kind":"entity|concept|synthesis"}
         - text: 1 句话教训，≤80 字
         - sourceFile/sourceLine/sourceExcerpt: 必须从下面"来源片段"里选一个真实存在
           的引用，**禁止编造**
         - decayClassRaw: slow=架构/长期决策、normal=通用教训、fast=临时观察/bug
+        - kind: wiki 分类 — entity=具体人/项目/工具, concept=抽象模式/规则,
+          synthesis=跨多个 entity/concept 的整合页；拿不准就回 fallback "concept"
         - 没东西可提炼就输出空数组 []
         """
         let user = """
@@ -317,6 +341,8 @@ public struct Consolidator {
         do {
             let analysis = try await analyze(mem)
             let drafts = try await generate(candidate: mem, analysis: analysis)
+            // analyze 推荐的 kind（draft 自身 kindRaw 没值时回退到这里）
+            let analysisKind = analysis.kindSafe
             var out: [Memory] = []
             for d in drafts {
                 let text = d.textSafe
@@ -329,10 +355,17 @@ public struct Consolidator {
                 // 来源真实性闸：sourceFile 必须与原 candidate 的 source 同文件
                 guard mem.sources.contains(where: { $0.file == d.sourceFileSafe })
                 else { continue }
+                // 优先级：draft 自己给的 kindRaw > analyze 推荐的 > 默认 concept
+                let resolvedKind: MemoryKind = {
+                    if let raw = d.kindRaw, !raw.isEmpty,
+                       let k = MemoryKind(rawValue: raw.lowercased()) { return k }
+                    return analysisKind
+                }()
                 let draft = Memory(
                     text: text,
                     sources: [draftSource],
-                    decayClass: DecayClass(rawValue: d.decayClassRaw ?? "") ?? .normal
+                    decayClass: d.decayClassSafe,
+                    kind: resolvedKind
                 )
                 guard try await verify(draft) else { continue }
                 var accepted = draft

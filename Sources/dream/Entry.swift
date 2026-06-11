@@ -54,6 +54,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate(ignoringOtherApps: true)
         FileHandle.standardError.write(Data("[DreamVault] applicationDidFinishLaunching fired\n".utf8))
+        // 架构第 1 节末段："app 启动时 chmod" —— GUI 启动就把 raw/ 挂为只读。
+        // DreamCycle.runOnce 也会再调一次，但 GUI 启动到第一次 Run Dream 之间这段时间
+        // 也得守住（用户可能手动编辑 raw/、外部编辑器可能打开 raw/）。
+        let vaultRoot = (ProcessInfo.processInfo.environment["DREAMVAULT_VAULT"])
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? URL(fileURLWithPath: NSHomeDirectory() + "/.dreamvault", isDirectory: true)
+        try? RawReadonlyGuard.makeReadonly(vaultRoot: vaultRoot)
+        FileHandle.standardError.write(Data("[DreamVault] RawReadonlyGuard applied at \(vaultRoot.path)/raw\n".utf8))
         // SwiftUI 的 WindowGroup 在 macOS 13 SwiftPM 编译产物下经常因为
         // state restoration race 不创建窗口，这里兜底：如果 1.5s 后还没窗口，
         // 直接 NSWindow 创一个 native 的 MainView 容器。
