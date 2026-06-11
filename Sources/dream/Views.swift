@@ -7,14 +7,18 @@ import DreamEngine
 struct MainView: View {
     @EnvironmentObject var model: AppModel
     @StateObject private var editorState = EditorState()
+    @StateObject private var gitWatcher = GitStatusWatcher()
 
     var body: some View {
         NavigationSplitView {
             VaultBrowser()
                 .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 400)
         } content: {
-            EditorPane(state: editorState)
-                .navigationSplitViewColumnWidth(min: 400, ideal: 600)
+            VStack(spacing: 0) {
+                GitStatusBanner(currentFile: model.selectedFile, watcher: gitWatcher)
+                EditorPane(state: editorState)
+            }
+            .navigationSplitViewColumnWidth(min: 400, ideal: 600)
         } detail: {
             HSplitView {
                 FrontmatterInspector(state: editorState)
@@ -30,6 +34,21 @@ struct MainView: View {
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .truncationMode(.head)
+            }
+        }
+        .onAppear {
+            gitWatcher.refresh(vaultRoot: model.vaultRoot)
+        }
+        .onChange(of: model.selectedFile) { newFile in
+            gitWatcher.refresh(vaultRoot: model.vaultRoot)
+            if let f = newFile {
+                gitWatcher.updateDiff(for: f, vaultRoot: model.vaultRoot)
+            }
+        }
+        .onChange(of: editorState.buffer) { _ in
+            // autosave 之后或 on-disk 变 → 重算 diff
+            if let f = model.selectedFile {
+                gitWatcher.updateDiff(for: f, vaultRoot: model.vaultRoot)
             }
         }
     }
