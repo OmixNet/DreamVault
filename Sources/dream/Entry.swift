@@ -120,6 +120,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let vaultRoot = DreamEntry.resolveInitialVault()
         try? RawReadonlyGuard.makeReadonly(vaultRoot: vaultRoot)
         FileHandle.standardError.write(Data("[DreamVault] RawReadonlyGuard applied at \(vaultRoot.path)/raw\n".utf8))
+        // **P0-3 fix**: AppModel 已经初始化完，可以用同一个 vault 了
+        // —— 在这里清 UserDefaults（之前 AppModel.init 清，AppDelegate 拿不到）
+        UserDefaults.standard.removeObject(forKey: "DreamVaultInitialVault")
         // SwiftUI 的 WindowGroup 在 macOS 13 SwiftPM 编译产物下经常因为
         // state restoration race 不创建窗口，这里兜底：如果 1.5s 后还没窗口，
         // 直接 NSWindow 创一个 native 的 MainView 容器。
@@ -221,10 +224,11 @@ final class AppModel: ObservableObject {
             ?? (env.map { URL(fileURLWithPath: $0, isDirectory: true) })
             ?? URL(fileURLWithPath: NSHomeDirectory() + "/.dreamvault", isDirectory: true)
         self.vaultRoot = defaultPath
-        // 用完即清：避免下次启动时残留旧 vault
-        if fromUserDefaults != nil {
-            UserDefaults.standard.removeObject(forKey: "DreamVaultInitialVault")
-        }
+        // **P0-3 fix**: 不在这里清 UserDefaults —— AppDelegate 的
+        // applicationDidFinishLaunching 也要读这个 key 拿 vault 来 chmod raw/。
+        // SwiftUI @StateObject 初始化时机早于 applicationDidFinishLaunching，
+        // 之前在这里清会让 AppDelegate 拿不到 custom vault。
+        // 清的动作下移到 AppDelegate（见 installFallbackWindow 之后）。
         refreshStatus()
     }
 
