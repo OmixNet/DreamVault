@@ -19,6 +19,45 @@ final class DreamCycleIntegrationTests: XCTestCase {
     var git: GitRunner!
     let now = Date(timeIntervalSince1970: 1_700_000_000)
 
+    /// 把当前 working tree commit 进去（除引擎路径）。每个测试 setup 完后调用。
+    /// 测试自己的 raw 文件需要先入库，dream 才有"新源"可收。
+    ///
+    /// 这里直接调 git 子命令，不走 GitRunner.commitAll —— 后者会 unstage 非引擎路径，
+    /// 不适合"用户 commit 自己的 raw"这个语义。
+    private func commitWorkingTreeAsUser(message: String) throws {
+        let identity = ["-c", "user.name=TestUser", "-c", "user.email=test@example.com"]
+        try run(["add", "-A"])
+        // 只在有 staged 改动时才 commit
+        let status = try runCapture(["status", "--porcelain"])
+        guard !status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        try run(identity + ["commit", "-m", message])
+    }
+
+    /// 调 git 子命令（捕获 stdout）
+    private func runCapture(_ args: [String]) throws -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = ["git", "-C", tempDir.path] + args
+        let outPipe = Pipe(), errPipe = Pipe()
+        p.standardOutput = outPipe
+        p.standardError = errPipe
+        try p.run()
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        if p.terminationStatus != 0 {
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let msg = String(data: errData, encoding: .utf8) ?? ""
+            throw NSError(domain: "TestGit", code: Int(p.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: msg])
+        }
+        return String(data: outData, encoding: .utf8) ?? ""
+    }
+
+    /// 调 git 子命令（无 stdout）
+    private func run(_ args: [String]) throws {
+        _ = try runCapture(args)
+    }
+
     override func setUpWithError() throws {
         try super.setUpWithError()
         // 每个测试一个全新临时目录
@@ -37,7 +76,11 @@ final class DreamCycleIntegrationTests: XCTestCase {
         // 提交一个初始空 commit 避免 root commit 边界
         let initialFile = tempDir.appendingPathComponent(".gitkeep")
         try "init".write(to: initialFile, atomically: true, encoding: .utf8)
-        _ = try git.commitAll(message: "init")
+        // 用 raw git 提交（不走 GitRunner.commitAll — 后者会 unstage 非引擎路径，
+        // 但 .gitkeep 不是引擎路径，会被 unstage 然后 commit 失败）
+        try run(["add", ".gitkeep"])
+        try run(["-c", "user.name=TestUser", "-c", "user.email=test@example.com",
+                 "commit", "-m", "init"])
     }
 
     override func tearDownWithError() throws {
@@ -49,6 +92,8 @@ final class DreamCycleIntegrationTests: XCTestCase {
 
     // MARK: - 工具：写 raw 文件
 
+    /// 写 raw 文件并自动 commit（让 raw 文件进入 vault 历史）。
+    /// dream 的 preflight 要求工作区干净；测试用的 raw 文件必须先入库。
     @discardableResult
     private func writeRaw(_ name: String, body: String, processed: Bool = false) throws -> URL {
         let url = tempDir.appendingPathComponent("raw").appendingPathComponent(name)
@@ -60,6 +105,7 @@ final class DreamCycleIntegrationTests: XCTestCase {
         \(body)
         """
         try content.write(to: url, atomically: true, encoding: .utf8)
+        try commitWorkingTreeAsUser(message: "add raw/\(name)")
         return url
     }
 
@@ -230,5 +276,52 @@ final class DreamCycleIntegrationTests: XCTestCase {
         let outcome = try await cycle.runOnce(now: now)
         XCTAssertEqual(outcome.gatheredCount, 1)
         XCTAssertFalse(outcome.committed, "dryRun 时不应 commit")
+    }
+
+    /// 8. 红线：vault 有未提交的"非引擎"改动时，dream 拒绝运行（userDirtyWorkspace）
+    /// 不应该 commit 用户的 raw 改动到 dream commit 里。
+    func testRunOnce_userDirtyWorkspace_aborts() async throws {
+        // 先跑一次，让引擎产出 ledger/wiki 之类 — 制造干净基线
+        _ = try writeRaw("2026-06-11-clean.md", body: "基线 raw")
+        let cycle = DreamCycle(vaultRoot: tempDir, llm: MockLLMProvider(), git: git)
+        _ = try await cycle.runOnce(now: now)
+
+        // 用户在工作区放一个"非引擎"的未追踪文件
+        let userFile = tempDir.appendingPathComponent("user-draft.md")
+        try "用户自己改的文件，不应该被 dream 吞掉".write(to: userFile, atomically: true, encoding: .utf8)
+
+        // 再跑一次 — 应该 userDirtyWorkspace 失败，不 commit，不写 processed.json（因为 gather 在 preflight 之后抛错）
+        do {
+            _ = try await cycle.runOnce(now: now)
+            XCTFail("应抛 userDirtyWorkspace")
+        } catch let e as DreamCycle.DreamError {
+            if case .userDirtyWorkspace = e {
+                // ok
+            } else {
+                XCTFail("期望 userDirtyWorkspace，实际 \(e)")
+            }
+        }
+
+        // 用户文件应原样存在
+        let userContent = try String(contentsOf: userFile, encoding: .utf8)
+        XCTAssertTrue(userContent.contains("用户自己改的文件"))
+    }
+
+    /// 9. 引擎路径（MEMORY.md / .dream/ / wiki/）的脏改动不算"用户改动"，dream 应该照常运行。
+    func testRunOnce_engineDirtyPaths_areAccepted() async throws {
+        _ = try writeRaw("2026-06-11-engineDirty.md", body: "测试引擎路径脏改动")
+        let cycle = DreamCycle(vaultRoot: tempDir, llm: MockLLMProvider(), git: git)
+        _ = try await cycle.runOnce(now: now)
+
+        // 用户改 MEMORY.md（在 dream:begin/end 之外加一段）— 应被识别为引擎路径而非用户改动
+        let memoryURL = tempDir.appendingPathComponent("MEMORY.md")
+        var content = try String(contentsOf: memoryURL, encoding: .utf8)
+        content += "\n\n## 用户的笔记\n\n手写内容，dream 不应该拒绝。\n"
+        try content.write(to: memoryURL, atomically: true, encoding: .utf8)
+
+        // 再跑一次 — 应该跑通（因为 dirty 的是引擎路径）
+        _ = try writeRaw("2026-06-11-engineDirty2.md", body: "第二轮 raw")
+        let outcome = try await cycle.runOnce(now: now)
+        XCTAssertEqual(outcome.gatheredCount, 1)
     }
 }

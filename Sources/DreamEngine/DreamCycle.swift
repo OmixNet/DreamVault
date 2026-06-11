@@ -52,6 +52,9 @@ public struct DreamCycle {
         case persistFailed(underlying: Error)
         case commitFailed(underlying: Error)
         case gitNotConfigured
+        /// 工作区有"非引擎"的未提交改动，dream 拒绝运行以避免吞掉用户改动。
+        /// 用户应先 commit / stash / discard 自己的改动，再跑 dream。
+        case userDirtyWorkspace
 
         public var description: String {
             switch self {
@@ -60,6 +63,7 @@ public struct DreamCycle {
             case .persistFailed(let e):    return "persist 阶段失败: \(e)"
             case .commitFailed(let e):     return "commit 阶段失败: \(e)"
             case .gitNotConfigured:        return "vault 未配置 git，无法做事务边界"
+            case .userDirtyWorkspace:      return "vault 工作区有未提交的非引擎改动（不是 MEMORY.md/.dream/wiki/archive）。请先 commit / stash / discard 自己的改动，再跑 dream。"
             }
         }
     }
@@ -71,6 +75,20 @@ public struct DreamCycle {
         if let git {
             do { try git.initIfNeeded() } catch {
                 throw DreamError.gitNotConfigured
+            }
+            // — 0b. Preflight：工作区有未提交改动？拒绝运行 —
+            // 理由：dream 只能 commit 引擎自己写的路径（MEMORY.md / .dream / wiki / archive）。
+            // 如果工作区有任何其他未提交改动（用户的 raw、README、配置等），
+            // dream 不应该吞掉它们。让用户先 commit 或 stash，再跑 dream。
+            do {
+                if try git.hasUserDirtyChanges() {
+                    throw DreamError.userDirtyWorkspace
+                }
+            } catch is DreamError {
+                throw DreamError.userDirtyWorkspace
+            } catch {
+                // hasUserDirtyChanges 本身失败 → 保守拒绝
+                throw DreamError.userDirtyWorkspace
             }
         }
 

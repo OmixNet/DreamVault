@@ -61,14 +61,77 @@ public struct GitRunner {
     /// dream 提交统一署名为引擎，不依赖宿主机 git 配置（无配置的全新 vault 也能提交）
     static let identity = ["-c", "user.name=DreamEngine", "-c", "user.email=dream@dreamvault.local"]
 
+/// dream 写出的路径集合。其他路径都被视为"用户领地"，dream 不触碰。
+    static let enginePaths = [
+        "MEMORY.md",
+        ".dream/",
+        "wiki/",
+        "archive/",
+    ]
+
+    static func isEnginePath(_ path: String) -> Bool {
+        Self.enginePaths.contains { p in
+            path == p || path.hasPrefix(p)
+        }
+    }
+
     /// 暂存全部变更并提交。无变更时返回 false（不视为错误——dream 可能一夜无事发生）。
+    ///
+    /// 设计选择：**只 commit 引擎写的路径**，不 `git add -A` 后整盘 commit。
+    /// 理由：`add -A` 会把用户自己的工作区改动（甚至未追踪的 raw 文件）
+    /// 一起吞进 dream commit，破坏"git 是事务边界"的纯净性。
+    ///
+    /// 实现：临时 stage 所有改动（容错：路径可能不存在），然后 unstage 非引擎路径，
+    /// 最后只 commit 剩下的（应该是 0 或引擎路径）。
+    /// 调用方应先用 hasUserDirtyChanges() 确认工作区干净。
     @discardableResult
     public func commitAll(message: String) throws -> Bool {
+        // 1. 临时 stage 所有（用 -A 容错，未追踪文件也不报错）
         try run(["add", "-A"])
-        let staged = try run(["status", "--porcelain"])
-        guard !staged.isEmpty else { return false }
+        // 2. 列出已 staged 的路径，把非引擎的 unstage 掉
+        let stagedOut = try run(["diff", "--cached", "--name-only"])
+        let stagedPaths = stagedOut.components(separatedBy: "\n").filter { !$0.isEmpty }
+        let toUnstage = stagedPaths.filter { !Self.isEnginePath($0) }
+        if !toUnstage.isEmpty {
+            // 用 `git reset HEAD --` 而不是 `git restore --staged`，因为空仓库（无 HEAD）
+            // 时 restore 会 fatal；reset 在空仓库上也工作。
+            try run(["reset", "HEAD", "--"] + toUnstage)
+        }
+        // 3. 看最终 staged
+        let final = try run(["diff", "--cached", "--name-only"])
+        guard !final.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
         try run(Self.identity + ["commit", "-m", message])
         return true
+    }
+
+    /// 检查 vault 工作区是否有任何未提交改动（除引擎路径外）。
+    /// 注意：raw/ 也算用户改动 —— dream 不应替用户 commit raw 文件。
+    /// 用户应先 commit 自己的 raw 日志，再跑 dream。
+    ///
+    /// 同时，引擎路径的**未追踪**文件（如 .dream/ledger.json 新建）也不算"用户改动"，
+    /// 因为这些文件就是 dream 要写入的目标 —— 但**未追踪的引擎路径如果存在**，
+    /// 说明 dream 之前没 commit 完（如中途崩溃），应该让 dream 接管完成 commit。
+    /// 所以这里不区分 staged/unstaged/untracked，只要路径是引擎路径就算 OK。
+    public func hasUserDirtyChanges() throws -> Bool {
+        let porcelain = try run(["status", "--porcelain"])
+        for line in porcelain.components(separatedBy: "\n") where !line.isEmpty {
+            guard line.count >= 4 else { continue }
+            let afterStatus = line.dropFirst(3)
+            // rename 形式取箭头右边
+            let path: String
+            if let arrowRange = afterStatus.range(of: " -> ") {
+                path = String(afterStatus[arrowRange.upperBound...])
+            } else {
+                path = String(afterStatus)
+            }
+            // 引擎路径：dream 自己的输出，OK
+            if Self.isEnginePath(path) { continue }
+            // 其他：用户改动（包括 raw/），dream 拒绝
+            return true
+        }
+        return false
     }
 
     /// 打标签（轻量 tag）
