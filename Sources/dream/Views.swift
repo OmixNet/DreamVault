@@ -23,7 +23,7 @@ struct MainView: View {
             HSplitView {
                 FrontmatterInspector(state: editorState)
                     .frame(minWidth: 260, idealWidth: 300, maxWidth: 400)
-                DreamPanel()
+                DreamPanel(editorState: editorState)
                     .frame(minWidth: 280, idealWidth: 340, maxWidth: 500)
             }
         }
@@ -138,6 +138,10 @@ struct VaultBrowser: View {
 
 struct DreamPanel: View {
     @EnvironmentObject var model: AppModel
+    /// P0-1：注入 editor state，Run Dream 前先 flush buffer 到磁盘，
+    /// 否则 DreamCycle 读到的可能是 autosave 之前的旧文件。
+    /// EditorState 在 MainView 创建共享实例；这里可选，方便不挂 editor 的场景。
+    var editorState: EditorState? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -153,6 +157,10 @@ struct DreamPanel: View {
                 }
                 HStack(spacing: 6) {
                     Button {
+                        // P0-1: 先 flush editor buffer，避免 DreamCycle 读到旧内容
+                        if let es = editorState {
+                            _ = es.flushIfDirty()
+                        }
                         Task { await model.runDream() }
                     } label: {
                         Label("Run Dream", systemImage: "play.fill")
