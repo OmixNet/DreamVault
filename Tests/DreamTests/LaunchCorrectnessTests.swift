@@ -92,20 +92,43 @@ final class LaunchCorrectnessTests: XCTestCase {
 
     func testResolveInitialVault_prefersUserDefaults() {
         // 清理 + 设 UserDefaults
+        DreamEntry.resetLaunchVaultForTesting()
         UserDefaults.standard.removeObject(forKey: "DreamVaultInitialVault")
         UserDefaults.standard.set("/Users/custom/vault", forKey: "DreamVaultInitialVault")
-        defer { UserDefaults.standard.removeObject(forKey: "DreamVaultInitialVault") }
+        defer {
+            UserDefaults.standard.removeObject(forKey: "DreamVaultInitialVault")
+            DreamEntry.resetLaunchVaultForTesting()
+        }
 
         let resolved = DreamEntry.resolveInitialVault()
         XCTAssertEqual(resolved.path, "/Users/custom/vault")
     }
 
     func testResolveInitialVault_fallsBackToDefault() {
+        DreamEntry.resetLaunchVaultForTesting()
         UserDefaults.standard.removeObject(forKey: "DreamVaultInitialVault")
         // env 不动（DREAMVAULT_VAULT 在 test runner 可能没设）
         let resolved = DreamEntry.resolveInitialVault()
         // 至少应能解析到一个 URL（不崩），path 非空
         XCTAssertFalse(resolved.path.isEmpty)
+    }
+
+    func testAppModelInit_keepsLaunchVaultAfterAppDelegateClearsLegacyKey() {
+        DreamEntry.resetLaunchVaultForTesting()
+        UserDefaults.standard.removeObject(forKey: "DreamVaultInitialVault")
+        UserDefaults.standard.set("/Users/custom/vault", forKey: "DreamVaultInitialVault")
+        defer {
+            UserDefaults.standard.removeObject(forKey: "DreamVaultInitialVault")
+            DreamEntry.resetLaunchVaultForTesting()
+        }
+
+        let delegateVault = DreamEntry.resolveInitialVault()
+        UserDefaults.standard.removeObject(forKey: "DreamVaultInitialVault")
+
+        let model = AppModel()
+
+        XCTAssertEqual(delegateVault.path, "/Users/custom/vault")
+        XCTAssertEqual(model.vaultRoot.path, delegateVault.path)
     }
 
     // MARK: - P0-1: Run Dream 前 flush

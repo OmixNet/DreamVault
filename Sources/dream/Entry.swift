@@ -22,6 +22,8 @@ struct DreamEntry {
     private static let cliSubcommands: Set<String> = [
         "run", "rollback", "status", "report", "help", "version",
     ]
+    private static let legacyInitialVaultKey = "DreamVaultInitialVault"
+    private static var processLaunchVaultPath: String?
 
     static func main() {
         let args = Array(CommandLine.arguments.dropFirst())
@@ -39,10 +41,12 @@ struct DreamEntry {
     /// 否则 CFPrefsD 会在 applicationWillFinishLaunching 之前加载默认 true，
     /// 卡在 "Restoring windows" 然后 0 窗出来。
     private static func launchGUI(args: [String]) {
-        // 把 --vault / -v 解析出来，写进 UserDefaults 让 AppModel 读
-        // （AppModel 是 @MainActor，@StateObject 不接受构造参数——用 UserDefaults 中转）
+        // 把 --vault / -v 解析出来放进进程内缓存；UserDefaults 只保留为旧版本桥接。
+        // SwiftUI @StateObject 和 NSApplicationDelegate 的初始化顺序在不同启动方式下不稳定，
+        // 所以不能靠一个会被清掉的临时 UserDefaults key 作为唯一来源。
         if let vault = parseVaultArg(args) {
-            UserDefaults.standard.set(vault, forKey: "DreamVaultInitialVault")
+            processLaunchVaultPath = vault
+            UserDefaults.standard.set(vault, forKey: legacyInitialVaultKey)
         }
         UserDefaults.standard.set(false, forKey: "ApplePersistenceIgnoreState")
         UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
@@ -78,20 +82,48 @@ struct DreamEntry {
         return nil
     }
 
-    /// P0-3: GUI 启动期解析 vault 路径。和 AppModel.init 同一套优先顺序：
-    /// 1. UserDefaults["DreamVaultInitialVault"]（launchGUI 从 --vault 写入）
-    /// 2. DREAMVAULT_VAULT 环境变量
-    /// 3. ~/.dreamvault
+    /// P0-3: GUI 启动期解析 vault 路径。AppDelegate 和 AppModel 必须走同一套入口：
+    /// 1. 进程内启动参数缓存（launchGUI 从 --vault 写入）
+    /// 2. UserDefaults["DreamVaultInitialVault"]（旧版本桥接；读到后也缓存到进程内）
+    /// 3. DREAMVAULT_VAULT 环境变量
+    /// 4. Settings 里保存的 vaultPath
+    /// 5. ~/.dreamvault
     /// 用在 AppDelegate 的 raw chmod 保护，确保自定义 vault 也能被挂只读。
     static func resolveInitialVault() -> URL {
-        if let fromUserDefaults = UserDefaults.standard.string(forKey: "DreamVaultInitialVault") {
-            return URL(fileURLWithPath: fromUserDefaults, isDirectory: true)
+        if let processLaunchVaultPath = nonEmptyPath(processLaunchVaultPath) {
+            return vaultURL(from: processLaunchVaultPath)
         }
-        if let env = ProcessInfo.processInfo.environment["DREAMVAULT_VAULT"] {
-            return URL(fileURLWithPath: env, isDirectory: true)
+        if let fromUserDefaults = nonEmptyPath(UserDefaults.standard.string(forKey: legacyInitialVaultKey)) {
+            processLaunchVaultPath = fromUserDefaults
+            return vaultURL(from: fromUserDefaults)
         }
-        return URL(fileURLWithPath: NSHomeDirectory() + "/.dreamvault", isDirectory: true)
+        if let env = nonEmptyPath(ProcessInfo.processInfo.environment["DREAMVAULT_VAULT"]) {
+            return vaultURL(from: env)
+        }
+        let settings = DreamSettings.load()
+        if let settingsVault = nonEmptyPath(settings.vaultPath) {
+            return vaultURL(from: settingsVault)
+        }
+        return vaultURL(from: NSHomeDirectory() + "/.dreamvault")
     }
+
+    private static func nonEmptyPath(_ path: String?) -> String? {
+        guard let trimmed = path?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func vaultURL(from path: String) -> URL {
+        URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+    }
+
+    #if DEBUG
+    static func resetLaunchVaultForTesting() {
+        processLaunchVaultPath = nil
+    }
+    #endif
 }
 
 // MARK: - SwiftUI App
@@ -120,8 +152,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let vaultRoot = DreamEntry.resolveInitialVault()
         try? RawReadonlyGuard.makeReadonly(vaultRoot: vaultRoot)
         FileHandle.standardError.write(Data("[DreamVault] RawReadonlyGuard applied at \(vaultRoot.path)/raw\n".utf8))
-        // **P0-3 fix**: AppModel 已经初始化完，可以用同一个 vault 了
-        // —— 在这里清 UserDefaults（之前 AppModel.init 清，AppDelegate 拿不到）
+        // 清掉旧版 UserDefaults 桥接，避免本次 --vault 污染下一次双击启动。
+        // 真正的本进程来源已经在 DreamEntry.resolveInitialVault() 缓存下来。
         UserDefaults.standard.removeObject(forKey: "DreamVaultInitialVault")
         // SwiftUI 的 WindowGroup 在 macOS 13 SwiftPM 编译产物下经常因为
         // state restoration race 不创建窗口，这里兜底：如果 1.5s 后还没窗口，
@@ -306,6 +338,10 @@ enum AppActions {
         panel.message = "选择 vault 根目录（含 raw/ + wiki/ + .git/）"
         if panel.runModal() == .OK, let url = panel.url {
             model.switchVault(to: url)
+            try? RawReadonlyGuard.makeReadonly(vaultRoot: url)
+            var settings = DreamSettings.load()
+            settings.vaultPath = url.path
+            settings.save()
         }
     }
 
@@ -454,22 +490,10 @@ public final class AppModel: ObservableObject {
 
     /// GUI 模式默认 vault 路径解析顺序（最高优先在前）：
     /// 1. init(vault:) 显式传入
-    /// 2. UserDefaults["DreamVaultInitialVault"]（Entry.swift 从 --vault 写入）
-    /// 3. DREAMVAULT_VAULT 环境变量
-    /// 4. ~/.dreamvault
+    /// 2. DreamEntry.resolveInitialVault() 统一入口（--vault / env / Settings / default）
     init(vault: URL? = nil) {
-        let env = ProcessInfo.processInfo.environment["DREAMVAULT_VAULT"]
-        let fromUserDefaults = UserDefaults.standard.string(forKey: "DreamVaultInitialVault")
-        let defaultPath = vault
-            ?? fromUserDefaults.map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? (env.map { URL(fileURLWithPath: $0, isDirectory: true) })
-            ?? URL(fileURLWithPath: NSHomeDirectory() + "/.dreamvault", isDirectory: true)
+        let defaultPath = vault ?? DreamEntry.resolveInitialVault()
         self.vaultRoot = defaultPath
-        // **P0-3 fix**: 不在这里清 UserDefaults —— AppDelegate 的
-        // applicationDidFinishLaunching 也要读这个 key 拿 vault 来 chmod raw/。
-        // SwiftUI @StateObject 初始化时机早于 applicationDidFinishLaunching，
-        // 之前在这里清会让 AppDelegate 拿不到 custom vault。
-        // 清的动作下移到 AppDelegate（见 installFallbackWindow 之后）。
         refreshStatus()
     }
 
