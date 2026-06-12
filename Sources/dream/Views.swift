@@ -14,6 +14,8 @@ struct MainView: View {
     @State private var showWelcome: Bool = false
     /// P2-2: 弹 Knowledge Graph 窗口
     @State private var showGraph: Bool = false
+    /// P2-3: 弹 Insert Wikilink 输入框
+    @State private var showInsertWikilink: Bool = false
 
     /// P3-C1: 把 model 和 editorState 写进 FocusedValues，菜单 command 才能读
     var body: some View {
@@ -77,6 +79,21 @@ struct MainView: View {
                 onDismiss: { showGraph = false }
             )
         }
+        // P2-3: Insert Wikilink 输入框
+        .sheet(isPresented: $showInsertWikilink) {
+            InsertWikilinkView(
+                onCommit: { target, alias in
+                    let ins = WikiLinkExtractor.insertionString(target: target, alias: alias)
+                    // 简化: 追加到 buffer 末尾 + 留 spacing (光标位置让用户自己控制)
+                    if !editorState.buffer.isEmpty, !editorState.buffer.hasSuffix("\n") {
+                        editorState.buffer += "\n"
+                    }
+                    editorState.buffer += ins
+                    showInsertWikilink = false
+                },
+                onCancel: { showInsertWikilink = false }
+            )
+        }
         // P6-T3: 启动后 3s 静默检查更新（不打扰）
         .task {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -99,6 +116,10 @@ struct MainView: View {
             NotificationCenter.default.addObserver(
                 forName: .showKnowledgeGraph, object: nil, queue: .main
             ) { _ in showGraph = true }
+            // P2-3: 菜单栏 Insert Wikilink
+            NotificationCenter.default.addObserver(
+                forName: .showInsertWikilink, object: nil, queue: .main
+            ) { _ in showInsertWikilink = true }
             // P7-T1: first-run welcome
             if FirstRunTracker.shouldShow() {
                 // 0.5s 延迟让主窗先起，避免 sheet 紧贴

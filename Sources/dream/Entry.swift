@@ -353,6 +353,8 @@ extension Notification.Name {
     public static let showVaultSearch = Notification.Name("com.OmixNet.dreamvault.showSearch")
     /// P2-2: 弹 Knowledge Graph 窗口
     public static let showKnowledgeGraph = Notification.Name("com.OmixNet.dreamvault.showGraph")
+    /// P2-3: 弹 Insert Wikilink 输入框
+    public static let showInsertWikilink = Notification.Name("com.OmixNet.dreamvault.insertWikilink")
     // P9 P0-4: 菜单 Import → 触发 VaultBrowser 弹 NSOpenPanel
     public static let dreamVaultImportToRaw = Notification.Name("com.OmixNet.dreamvault.importToRaw")
 }
@@ -386,6 +388,11 @@ enum AppActions {
     /// P2-2: 菜单栏 Knowledge Graph — 弹 GraphWindow
     static func openGraph(model: AppModel) {
         NotificationCenter.default.post(name: .showKnowledgeGraph, object: nil)
+    }
+
+    /// P2-3: 菜单栏 Insert Wikilink — 弹输入框, 插入 [[target]] 到光标
+    static func insertWikilink(model: AppModel) {
+        NotificationCenter.default.post(name: .showInsertWikilink, object: nil)
     }
 
     /// P2-1: 菜单栏 Recent Memory — 跳到该记忆的源文件并打开编辑器
