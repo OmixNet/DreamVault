@@ -37,7 +37,8 @@ public struct ConsolidationConfig: Sendable {
         self.redactBeforeConsolidate = redactBeforeConsolidate
         self.useThreeStepCoT = useThreeStepCoT
         self.fallbackOnThreeStepFailure = fallbackOnThreeStepFailure
-        self.concurrency = concurrency
+        // P3-T2: init 阶段就 cap，避免下游调用忘了再 max/min
+        self.concurrency = max(1, min(4, concurrency))
     }
 }
 

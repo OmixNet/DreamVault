@@ -189,6 +189,10 @@ struct DreamVaultApp: App {
                 .frame(minWidth: 1000, minHeight: 600)
         }
         .windowResizability(.contentMinSize)
+        // P3-T7: Settings scene（独立于 WindowGroup，SwiftUI 自动挂"Preferences…Cmd-,"菜单项）
+        Settings {
+            SettingsView()
+        }
         .commands {
             // 去掉默认 New File（用我们的 New Note 替代）
             CommandGroup(replacing: .newItem) {
@@ -212,6 +216,12 @@ struct DreamVaultApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(menuModel.selectedFile == nil)
+                Divider()
+                Button("Search Vault...") {
+                    // P3-T8: 通过 NotificationCenter 让 MainView 打开 search sheet
+                    NotificationCenter.default.post(name: .showVaultSearch, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
                 Divider()
                 Button("Export Diagnostics...") {
                     AppActions.exportDiagnostics(model: menuModel)
@@ -259,6 +269,11 @@ struct DreamVaultApp: App {
             }
         }
     }
+}
+
+// P3-T8: Search sheet 触发通知
+extension Notification.Name {
+    public static let showVaultSearch = Notification.Name("com.OmixNet.dreamvault.showSearch")
 }
 
 // MARK: - 菜单 action helpers（避免在 View body 里堆一堆闭包）
@@ -418,7 +433,7 @@ struct DreamStage: Identifiable, Equatable {
 // - status: 实时 vault 状态（raw 候选数 / ledger 三态 / 矛盾数 / 最近 report 路径）
 
 @MainActor
-final class AppModel: ObservableObject {
+public final class AppModel: ObservableObject {
     @Published var vaultRoot: URL
     @Published var selectedFile: URL? = nil
     @Published var lastOutcome: DreamCycle.Outcome? = nil
@@ -430,6 +445,8 @@ final class AppModel: ObservableObject {
     /// P3-C3: 5 步 stage 进度（gather / consolidate / decay / persist / commit）。
     /// 每步独立状态：pending / running / success(detail) / failed(detail) / skipped。
     @Published var dreamStages: [DreamStage] = DreamStage.allStages
+    /// P3-T1: 暴露 ledger 给 ConflictResolutionView（行内裁决读 + 写回）
+    @Published var ledger: Ledger = .init()
     // T1 起 EditorState 接管 buffer / dirty 状态；保留 @Published 占位以兼容
     // 其他可能直接读这两个字段的视图代码（实际 EditorPane 自己用 EditorState）
     @Published var textEditorContent: String = ""
@@ -470,6 +487,7 @@ final class AppModel: ObservableObject {
 
     func refreshStatus() {
         status = VaultStatus.load(from: vaultRoot)
+        ledger = Persister.loadLedger(vaultRoot: vaultRoot)  // P3-T1
     }
 
     /// 重置 stages 到初始 pending 状态
