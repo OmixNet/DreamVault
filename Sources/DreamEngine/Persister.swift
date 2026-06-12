@@ -32,12 +32,16 @@ public struct Persister {
         /// 本次收集过的 raw 相对路径（commit 成功即视为 processed）
         public var gatheredFiles: [String]
         public var now: Date
+        /// P8: 脱敏命中统计（每类多少处）。空 = 未启用或没命中。
+        public var redactionCounts: [String: Int]
 
         public init(ledger: Ledger, decayResults: [DecayResult] = [],
                     newlyAccepted: [Memory] = [], gatheredFiles: [String] = [],
+                    redactionCounts: [String: Int] = [:],
                     now: Date = Date()) {
             self.ledger = ledger; self.decayResults = decayResults
             self.newlyAccepted = newlyAccepted; self.gatheredFiles = gatheredFiles
+            self.redactionCounts = redactionCounts
             self.now = now
         }
     }
@@ -368,6 +372,21 @@ public struct Persister {
         }
         if !needsReviewIDs.isEmpty {
             out += "\n\n## 待裁决\n" + needsReviewIDs.map { "- [[\($0)]] 存在矛盾链接" }.joined(separator: "\n")
+        }
+        // P8: 脱敏命中统计
+        // 让用户在 dream-report 里直接看到"今天 N 条 [REDACTED_XXX]"，
+        // 用于发现 CN_ID_CARD 误伤长数字串这类规则问题。
+        // 排序：按命中次数从高到低
+        let sortedCounts = input.redactionCounts.sorted { $0.value > $1.value }
+        if !sortedCounts.isEmpty {
+            let total = sortedCounts.reduce(0) { $0 + $1.value }
+            out += "\n\n## Redaction（脱敏命中）\n"
+            out += "本轮共 \(total) 处脱敏命中（仅 redactBeforeConsolidate=true 时统计）：\n"
+            for (label, count) in sortedCounts {
+                out += "- [REDACTED_\(label)]: \(count) 处\n"
+            }
+        } else {
+            out += "\n\n## Redaction\n本轮无脱敏命中（redactBeforeConsolidate=false 或 raw 无敏感字段）\n"
         }
         return out + "\n"
     }

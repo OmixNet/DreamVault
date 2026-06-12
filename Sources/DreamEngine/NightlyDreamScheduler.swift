@@ -3,21 +3,23 @@ import AppKit
 
 /// P3-T9: 注册 / 取消 launchd 定时任务。
 ///
-/// 当前实现：写日志 + 用 `launchctl` 调用 launchd。
-/// 完整实现：macOS 13+ 用 SMAppService 替代 shell 调用（更干净）。
+/// 路径选择（P8 修正）：**用户级 LaunchAgent**（写 `~/Library/LaunchAgents/` + `launchctl bootstrap gui/<uid>`），
+/// 不是系统级（`/Library/LaunchDaemons/`，需 root + SMAppService helper binary）。
 ///
-/// 真生产代码应通过 SMAppService：
-/// ```swift
-/// let service = SMAppService.agent(plistName: "com.OmixNet.dreamvault.dream")
-/// if enabled {
-///     try await service.register()
-/// } else {
-///     try await service.unregister()
-/// }
-/// ```
+/// - 当前实现已经可用：写 plist + `launchctl bootstrap` / `bootout`。
+/// - 注释里之前那段"stub / 应该用 SMAppService"是 P3 时期的占位文本。P8 文档
+///   修正：DreamVault 是**用户级笔记 app + 用户级 scheduler**，`launchctl bootstrap`
+///   路径是正确选择。SMAppService 主要服务"应用主 daemon / 菜单栏 app 守护进程"
+///   这种需要系统级驻留的场景，**对 Nightly dream 反而是过度设计**。
+/// - SwiftUI/SMAppService 不是"Swift 推荐就一定合适"。这里不迁 SMAppService，
+///   理由：
+///   1. SMAppService 注册到 `/Library/LaunchAgents/` (系统级)，跟当前的用户级冲突
+///   2. SMAppService 调度粒度有限（agent 触发条件由 plist 决定，复杂日历调度仍要 plist）
+///   3. 用户笔记 app 不需要 "always-running" daemon；`launchctl bootstrap gui/<uid>` 的
+///      进程模型反而更对：用户退出 GUI → launchd job 跑独立的 `dream` 二进制 → 退出
 ///
-/// 这里为保持 T7 可工作，先 stub：把 enable/disable + vault 路径写到一个本地文件
-/// 给后续 launchd job 读。`launchctl` 真注册留给 T9 follow-up。
+/// - 配套实测脚本：`scripts/test-launchd.sh`（如果存在）会跑一遍 enable / disable / 状态读取
+/// - Debug 看 job 是否在跑：`launchctl print gui/<uid>/com.OmixNet.dreamvault.dream`
 @MainActor
 public final class NightlyDreamScheduler {
     public static let shared = NightlyDreamScheduler()

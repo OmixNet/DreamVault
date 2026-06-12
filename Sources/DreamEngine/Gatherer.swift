@@ -64,6 +64,8 @@ public struct Gatherer {
         public let candidates: [Memory]
         /// 本次实际收集到的 raw 相对路径（如 "raw/2026-06-07-claude.md"）
         public let gatheredFiles: [String]
+        /// P8: 脱敏命中统计（每类多少处）。为空 = 没启用 redactBeforeConsolidate / 没命中。
+        public let redactionCounts: [String: Int]
     }
 
     /// 扫描 raw/，返回脱敏后的候选 Memory 列表。
@@ -73,7 +75,7 @@ public struct Gatherer {
         let fm = FileManager.default
         let rawDir = vaultRoot.appendingPathComponent(rawSubdir)
         guard fm.fileExists(atPath: rawDir.path) else {
-            return GatherResult(candidates: [], gatheredFiles: [])
+            return GatherResult(candidates: [], gatheredFiles: [], redactionCounts: [:])
         }
         let processed = Self.loadProcessedRegistry(vaultRoot: vaultRoot)
 
@@ -83,6 +85,7 @@ public struct Gatherer {
 
         var candidates: [Memory] = []
         var gathered: [String] = []
+        var redactionCounts: [String: Int] = [:]
 
         for file in files {
             let relPath = "\(rawSubdir)/\(file.lastPathComponent)"
@@ -99,7 +102,12 @@ public struct Gatherer {
 
             let body = doc.body.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !body.isEmpty else { continue }
-            let redactedBody = redactor.redact(body).redactedText
+            let report = redactor.redact(body)
+            let redactedBody = report.redactedText
+            // P8: 累加脱敏命中次数，dream-report 会写出来给用户审查
+            for (label, count) in report.counts {
+                redactionCounts[label, default: 0] += count
+            }
             let excerpt = String(redactedBody.prefix(200))
 
             candidates.append(Memory(
@@ -108,7 +116,9 @@ public struct Gatherer {
                 status: .candidate))
             gathered.append(relPath)
         }
-        return GatherResult(candidates: candidates, gatheredFiles: gathered)
+        return GatherResult(candidates: candidates,
+                            gatheredFiles: gathered,
+                            redactionCounts: redactionCounts)
     }
 
     // MARK: - processed 登记（.dream/processed.json，替代写回 raw 的 processed:true）
