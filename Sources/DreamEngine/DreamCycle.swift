@@ -78,7 +78,19 @@ public struct DreamCycle {
         /// 用途：dream-report 末尾写一段，提示用户"今天 N 条 [REDACTED_XXX]"
         /// 让用户能发现"CN_ID_CARD 误伤长数字串"这类规则问题。
         public let redactionCounts: [String: Int]
+        /// P0-1: 矛盾检测预筛统计 + 实际 LLM 调用次数 (dream-report "## Prescreen" 段用)
+        public let prescreenStats: PrescreenStats?
         public var nothingToDo: Bool { gatheredCount == 0 && acceptedCount == 0 }
+    }
+
+    /// P0-1: 矛盾检测预筛的统计, 给 dream-report 末尾的 "## Prescreen" 段用
+    public struct PrescreenStats: Equatable {
+        public let candidatesCount: Int       // 本轮候选数
+        public let existingCount: Int         // 现有 durable 数
+        public let keptByScreener: Int        // 预筛留下的对数
+        public let llmCalls: Int              // 实际调 LLM 的次数
+        public let truncated: Int             // 超过 maxPairsPerNight 被截断的对数
+        public let maxPairsPerNight: Int      // 配置上限
     }
 
     public enum DreamError: Error, CustomStringConvertible {
@@ -152,6 +164,8 @@ public struct DreamCycle {
         // —— 这里是设计选择：让 dream 每晚都有动作（哪怕只是衰减旧记忆）
         var newAccepted: [Memory] = []
         var mergedLedger = Persister.loadLedger(vaultRoot: vaultRoot)
+        // P0-1: 矛盾检测预筛统计 (dream-report ## Prescreen 段)
+        var prescreenStats: PrescreenStats? = nil
 
         if !gathered.candidates.isEmpty {
             // — 2. Consolidate：新候选 → 经四道闸的可信教训 —
@@ -172,9 +186,12 @@ public struct DreamCycle {
                 throw DreamError.consolidateFailed(underlying: error)
             }
 
-            // — 2b. 矛盾建链：新教训 vs 现有 durable —
+            // — 2b. 矛盾建链：新教训 vs 现有 durable (P0-1: 走预筛) —
             if !newAccepted.isEmpty {
-                let detector = ContradictionDetector(llm: llm)
+                // 用现有全部 memory 建图 (durable + candidate 都进图, candidate 间连边)
+                // 这样预筛的 Adamic-Adar 才能拿到真信号; 否则空图 → 全走 token 预筛
+                let graph = KnowledgeGraph(memories: mergedLedger.memories + newAccepted)
+                var detector = ContradictionDetector(llm: llm, maxPairsPerNight: 50, graph: graph)
                 let dur = mergedLedger.memories.filter { $0.status == .durable }
                 if !dur.isEmpty {
                     do {
@@ -188,6 +205,17 @@ public struct DreamCycle {
                                     mergedLedger.memories[j] = updated
                                 }
                             }
+                        }
+                        // P0-1: 装预筛统计
+                        if let pr = detector.lastPrescreenResult {
+                            prescreenStats = PrescreenStats(
+                                candidatesCount: newAccepted.count,
+                                existingCount: dur.count,
+                                keptByScreener: pr.totalKeptByScreener,
+                                llmCalls: detector.lastLLMCalls,
+                                truncated: pr.truncated,
+                                maxPairsPerNight: 50
+                            )
                         }
                     } catch {
                         onStage?("link failed: \(error.localizedDescription)")
@@ -239,6 +267,7 @@ public struct DreamCycle {
             newlyAccepted: newAccepted,
             gatheredFiles: gathered.gatheredFiles,
             redactionCounts: gathered.redactionCounts,  // P8: 让 dream-report 显示命中统计
+            prescreenStats: prescreenStats,             // P0-1: 让 dream-report 显示预筛统计
             now: now
         )
 
@@ -270,7 +299,8 @@ public struct DreamCycle {
             reportPath: outcome.reportPath,
             memoryMdPath: outcome.memoryMdPath,
             committed: outcome.committed,
-            redactionCounts: gathered.redactionCounts
+            redactionCounts: gathered.redactionCounts,
+            prescreenStats: prescreenStats
         )
     }
 

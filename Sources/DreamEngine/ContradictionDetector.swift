@@ -6,10 +6,29 @@ import Foundation
 /// 关键决策：检测到矛盾**不自动删除**任何一方，而是双向建立 contradicts 链接，
 /// 让 Decayer 把它们标为 needsReview，交人工在 DreamPanel 裁决。
 /// 这与内核的"保守优先、绝不自动删"原则一致。
+///
+/// P0-1 改动 (成本债): 之前是 O(candidates × durable) LLM 调用，durable=500 + 新=10 = 5000 次。
+/// 改两级漏斗: Prescreener 零成本过滤（共享 token / Adamic-Adar） → 只对留下的对调 LLM。
+/// 预算硬上限: maxPairsPerNight=50 (默认), 超出截断 + report 写 "未比对完，明晚继续"。
 public struct ContradictionDetector {
     public let llm: LLMProvider
+    public let prescreener: Prescreener
+    /// 最近一次 link() 的预筛统计 — 让 DreamCycle 写进 dream-report 末尾的 "## Prescreen" 段
+    public private(set) var lastPrescreenResult: Prescreener.Result? = nil
+    public private(set) var lastLLMCalls: Int = 0
 
-    public init(llm: LLMProvider) { self.llm = llm }
+    public init(llm: LLMProvider,
+                maxPairsPerNight: Int = 50,
+                graph: KnowledgeGraph = KnowledgeGraph()) {
+        self.llm = llm
+        self.prescreener = Prescreener(maxPairsPerNight: maxPairsPerNight, graph: graph)
+    }
+
+    /// 暴露 mutable 接口给 DreamCycle 写统计 (替代 lastPrescreenResult 字段)
+    public mutating func recordStats(prescreen: Prescreener.Result, llmCalls: Int) {
+        self.lastPrescreenResult = prescreen
+        self.lastLLMCalls = llmCalls
+    }
 
     /// 询问 LLM：candidate 是否与 existing 矛盾。返回 true=矛盾。
     /// 用窄问题 + 强制单词输出，降低误判与幻觉。
@@ -31,22 +50,31 @@ public struct ContradictionDetector {
     }
 
     /// 把一批新教训与现有 durable 记忆比对，就地写入双向 contradicts 链接。
-    /// 返回更新后的 (新教训, 受影响的现有记忆)。两边都返回，便于上层写回 ledger。
-    public func link(candidates: [Memory],
-                     against existing: [Memory]) async throws -> (candidates: [Memory], existing: [Memory]) {
+    /// P0-1 改造: 先 Prescreener 过滤 (0 LLM), 只对 ≤ maxPairsPerNight 对跑 LLM.
+    public mutating func link(candidates: [Memory],
+                              against existing: [Memory]) async throws -> (candidates: [Memory], existing: [Memory]) {
         var cand = candidates
         var exist = existing
         // 只与 durable 比对：candidate 之间尚未确立，比对意义不大且放大成本
-        let durableIdx = exist.indices.filter { exist[$0].status == .durable }
+        let durableArr = exist.filter { $0.status == .durable }
 
-        for i in cand.indices {
-            for j in durableIdx {
-                if try await conflicts(cand[i], exist[j]) {
-                    if !cand[i].contradicts.contains(exist[j].id) {
-                        cand[i].contradicts.append(exist[j].id)
+        // 1. 预筛
+        let prescreenResult = prescreener.prescreen(candidates: cand, against: durableArr)
+        self.lastPrescreenResult = prescreenResult
+        self.lastLLMCalls = 0
+
+        // 2. 只对预筛留下的对调 LLM
+        for pair in prescreenResult.toCompare {
+            self.lastLLMCalls += 1
+            if try await conflicts(pair.candidate, pair.existing) {
+                if let i = cand.firstIndex(where: { $0.id == pair.candidate.id }) {
+                    if !cand[i].contradicts.contains(pair.existing.id) {
+                        cand[i].contradicts.append(pair.existing.id)
                     }
-                    if !exist[j].contradicts.contains(cand[i].id) {
-                        exist[j].contradicts.append(cand[i].id)
+                }
+                if let j = exist.firstIndex(where: { $0.id == pair.existing.id }) {
+                    if !exist[j].contradicts.contains(pair.candidate.id) {
+                        exist[j].contradicts.append(pair.candidate.id)
                     }
                 }
             }

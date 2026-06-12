@@ -485,7 +485,7 @@ public struct Consolidator {
         against existing: [Memory]
     ) async throws -> (accepted: [Memory], updatedExisting: [Memory]) {
         let accepted = try await consolidate(raw)
-        let detector = ContradictionDetector(llm: llm)
+        var detector = ContradictionDetector(llm: llm)
         let linked = try await detector.link(candidates: accepted, against: existing)
         return (linked.candidates, linked.existing)
     }
