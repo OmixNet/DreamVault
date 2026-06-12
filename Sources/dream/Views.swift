@@ -337,6 +337,24 @@ struct DreamPanel: View {
                 detail: "durable \(model.status.durableCount) / candidate \(model.status.candidateCount) / archived \(model.status.archivedCount)")
             row("待裁决", value: "\(model.status.withContradictsCount)")
 
+            // P8: 预算状态（Dream tab 顶部 + Budget tab 详细表）
+            // 这里只显示紧凑版，详细见 Settings → Budget
+            if let bs = model.budgetSnapshot {
+                Divider().padding(.vertical, 4)
+                Text("Budget").font(.subheadline).bold()
+                row("today", value: "\(bs.todayCount)/\(bs.maxCallsPerDay == 0 ? "∞" : "\(bs.maxCallsPerDay)") calls")
+                row("month", value: String(format: "$%.2f", bs.monthCost) + "/\(bs.monthlyBudgetUSD == 0 ? "∞" : String(format: "$%.2f", bs.monthlyBudgetUSD))")
+                if bs.isOverBudget {
+                    Label("Over budget", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                } else if bs.monthlyBudgetUSD > 0 && bs.monthCost > bs.monthlyBudgetUSD * 0.8 {
+                    Label("Approaching budget limit", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
+
             // P3-T1: 行内矛盾裁决（计数 > 0 才显示）
             if model.status.withContradictsCount > 0 {
                 Divider().padding(.vertical, 4)

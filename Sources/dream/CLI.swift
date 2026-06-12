@@ -76,7 +76,9 @@ struct DreamCLI {
             }
         }
         let vault = opts.vaultURL()
-        let llm = opts.llmProvider()
+        // P8 修复：包一层 BudgetedLLMProvider 真实记录 LLM 调用
+        // 之前 opts.llmProvider() 直接返回裸 provider，预算一直是"检查器"
+        let (llm, budget) = await opts.budgetedLLMProvider()
         let git = GitRunner(repoRoot: vault)
         let cycle = DreamCycle(vaultRoot: vault, llm: llm, git: git, dryRun: dryRun)
         do {
@@ -90,6 +92,12 @@ struct DreamCLI {
                 FileHandle.standardError.write(Data(formatOutcome(outcome).utf8))
             }
             print(humanSummary(outcome))
+            // P8: 末尾打预算使用状态
+            let summary = await MainActor.run {
+                "budget: today \(budget.todayCount) call(s), $\(String(format: "%.4f", budget.todayCost)) used"
+            }
+            print(summary)
+            _ = summary  // 闭包式用一下避免 unused warning
             return 0
         } catch let err as DreamCycle.DreamError {
             FileHandle.standardError.write(Data("dream run 失败: \(err)\n".utf8))

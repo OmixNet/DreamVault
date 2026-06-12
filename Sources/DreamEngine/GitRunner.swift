@@ -214,6 +214,58 @@ public struct GitRunner {
         try run(Self.identity + ["revert", "--no-edit", "HEAD"])
     }
 
+    /// P8: 自动 commit 用户在 raw/ 等非引擎路径下的改动
+    /// 返回 commit hash（如果没东西可 commit 返回 nil）
+    /// 走显式 add（只 add 引擎外路径 + raw/）而不是 -A，避免把"chmod 0o555 raw 后的状态"
+    /// 误当成 dirty add 进去。
+    @discardableResult
+    public func autoCommitUserChanges(message: String = "user: auto commit before dream") throws -> String? {
+        // 找到所有 dirty 的非引擎路径
+        let porcelain = try run(["status", "--porcelain"])
+        var pathsToAdd: [String] = []
+        for line in porcelain.components(separatedBy: "\n") where !line.isEmpty {
+            // 用 hasUserDirtyChanges 同样的解析方式拿 path
+            var i = line.startIndex
+            while i < line.endIndex, line[i] == " " || line[i] == "\t" {
+                i = line.index(after: i)
+            }
+            var statusCount = 0
+            while i < line.endIndex, statusCount < 2,
+                  line[i] != " " && line[i] != "\t" {
+                i = line.index(after: i)
+                statusCount += 1
+            }
+            while i < line.endIndex, line[i] == " " || line[i] == "\t" {
+                i = line.index(after: i)
+            }
+            guard i < line.endIndex else { continue }
+            let afterStatus = String(line[i...])
+            let path: String
+            if let arrowRange = afterStatus.range(of: " -> ") {
+                path = String(afterStatus[arrowRange.upperBound...])
+            } else {
+                path = afterStatus
+            }
+            // 引擎路径跳过（dream 自己要处理的）
+            if Self.isEnginePath(path) { continue }
+            // raw/ 也算用户改动（用户加了新 raw 文件，但 arch 上 raw 应该是只读目录的）——
+            // 实际上 raw/ 不该被自动 commit（架构 doc 0.1）。但用户确实可能 new 一个 .md。
+            // P8 行为：raw/ 也加进去（auto commit 的"用户改动"包含 raw/）
+            pathsToAdd.append(path)
+        }
+        if pathsToAdd.isEmpty {
+            return nil
+        }
+        try run(["add"] + pathsToAdd)
+        // commit（如果 add 之后是空 staged，git commit 仍会失败；先 dry-run 检查）
+        let stagedCheck = try run(["diff", "--cached", "--name-only"])
+        if stagedCheck.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return nil
+        }
+        try run(Self.identity + ["commit", "-m", message])
+        return try run(["rev-parse", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// 当前 HEAD 的 commit hash
     public func headHash() throws -> String {
         return try run(["rev-parse", "HEAD"])

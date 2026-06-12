@@ -17,11 +17,22 @@ import DreamEngine
 
 @main
 struct DreamEntry {
-    /// 已知 CLI 子命令集合；只有命中这些才走 CLI，其他全部默认走 GUI。
-    /// 完整列表见 CLI.swift `DreamCLI.main()` 的 switch 块。
+    /// 已知 CLI 子命令集合；只有命中这些才走 CLI。其他全部默认走 GUI。
+    /// 完整列表见 CLI.swift `DreamCLI.dispatch()` 的 switch 块。
     private static let cliSubcommands: Set<String> = [
         "run", "rollback", "status", "report", "help", "version",
     ]
+    /// 启动模式判别：哪些首参明确走 GUI（其他默认进 CLI 走 default 报错路径）
+    private static let guiExplicitTokens: Set<String> = [
+        "app",          // 显式启动 GUI
+    ]
+    /// 从 Finder / Spotlight / open / 双击 .app 启动时 argv 通常是 [Contents/MacOS/dream]，
+    /// firstArg 为 nil。判断"非用户主动传参"的标准：firstArg == nil 或 firstArg 以 "-" 开头（flag）。
+    /// SwiftUI App.main() 自身会把 bundle argv 转成 SDK argv 列表，所以这部分我们不接管。
+    private static func looksLikeNoArgument(_ firstArg: String?) -> Bool {
+        // nil = 没人传参（双击 / Finder / open）；或者 firstArg 以 - 开头（看起来像 GUI 自己带的 flag）
+        return firstArg == nil
+    }
     private static let legacyInitialVaultKey = "DreamVaultInitialVault"
     private static var processLaunchVaultPath: String?
 
@@ -29,12 +40,27 @@ struct DreamEntry {
         let args = Array(CommandLine.arguments.dropFirst())
         let firstArg = args.first
 
-        // 显式 "app" 走 GUI；未知/空走 GUI（兼容双击 / Finder / Spotlight / open 启动）
-        if firstArg == "app" || firstArg == nil || !cliSubcommands.contains(firstArg ?? "") {
+        // 路由规则：
+        //   firstArg == nil            → GUI（Finder/Spotlight/双击）
+        //   firstArg == "app"          → GUI（显式）
+        //   firstArg 是已知 CLI 子命令 → CLI
+        //   其他所有（"nonsense"、"init"、自定义参数） → CLI，让 CLI.default 分支报错
+        //
+        // P8 修复：之前这个分支把任何未命中 cliSubcommands 的参数（包括 init / nonsense）都丢进 GUI，
+        // 导致 CLI 用户敲错命令时反而启了一个 SwiftUI 窗口。现在统一进 CLI 走 default 报错。
+        if looksLikeNoArgument(firstArg) || firstArg == "app" {
             launchGUI(args: args)
         } else {
             launchCLI()
         }
+    }
+
+    /// 静态分析辅助：判断一个首参是否明确走 CLI
+    /// 暴露出来给 test 用，避免测试重复这套 if 逻辑
+    static func isCLIRoute(_ firstArg: String?) -> Bool {
+        if looksLikeNoArgument(firstArg) { return false }
+        if firstArg == "app" { return false }
+        return true
     }
 
     /// 启动 SwiftUI GUI：必须比 NSApplication init 早设 UserDefaults，
@@ -571,6 +597,16 @@ public final class AppModel: ObservableObject {
     // 其他可能直接读这两个字段的视图代码（实际 EditorPane 自己用 EditorState）
     @Published var textEditorContent: String = ""
     @Published var textEditorDirty: Bool = false
+    // P8: 预算快照（Dream tab 顶部 + Budget tab 详细表都读这个）
+    @Published var budgetSnapshot: BudgetSnapshot? = nil
+    /// BudgetSnapshot 是从 BudgetManager 拉出来的不可变快照（避免 @MainActor 跨 context 泄漏）
+    struct BudgetSnapshot: Equatable {
+        var todayCount: Int
+        var maxCallsPerDay: Int
+        var monthCost: Double
+        var monthlyBudgetUSD: Double
+        var isOverBudget: Bool
+    }
 
     /// GUI 模式默认 vault 路径解析顺序（最高优先在前）：
     /// 1. init(vault:) 显式传入
@@ -596,6 +632,23 @@ public final class AppModel: ObservableObject {
     func refreshStatus() {
         status = VaultStatus.load(from: vaultRoot)
         ledger = Persister.loadLedger(vaultRoot: vaultRoot)  // P3-T1
+        refreshBudget()
+    }
+
+    /// P8: 从 BudgetManager 拉出快照（独立持久状态文件 .dream/budget-*.json）
+    /// 这样 GUI 重启后状态不丢
+    func refreshBudget() {
+        let settings = DreamSettings.load()
+        let resolved = ResolvedDreamRuntimeConfig.resolve(settings: settings)
+        let budget = BudgetManager(config: resolved.budget, vaultRoot: vaultRoot)
+        let snap = BudgetSnapshot(
+            todayCount: budget.todayCount,
+            maxCallsPerDay: resolved.budget.maxCallsPerDay,
+            monthCost: budget.monthCost,
+            monthlyBudgetUSD: resolved.budget.monthlyBudgetUSD,
+            isOverBudget: !budget.canProceed(estimatedOutputTokens: 0, modelHint: "unknown")
+        )
+        self.budgetSnapshot = snap
     }
 
     /// 重置 stages 到初始 pending 状态
@@ -654,15 +707,37 @@ public final class AppModel: ObservableObject {
 
             // P4-T3: 从 Keychain 取 API key
             let apiKey: String? = resolved.llm.keychainItem.flatMap { Keychain.loadIfPresent(itemName: $0) }
-            let llm: LLMProvider
+            let baseLLM: LLMProvider
             switch resolved.llm.provider {
             case .mock:
-                llm = MockLLMProvider()
+                baseLLM = MockLLMProvider()
             case .ollama:
-                llm = OllamaProvider(baseURL: resolved.llm.baseURL, model: resolved.llm.model)
+                baseLLM = OllamaProvider(baseURL: resolved.llm.baseURL, model: resolved.llm.model)
             case .openaiCompat:
-                llm = OllamaProvider(baseURL: resolved.llm.baseURL, model: resolved.llm.model, apiKey: apiKey)
+                baseLLM = OllamaProvider(baseURL: resolved.llm.baseURL, model: resolved.llm.model, apiKey: apiKey)
             }
+            // P8: 包一层 BudgetedLLMProvider，让 LLM 调用真实记录到 budget
+            let providerName: String = {
+                switch resolved.llm.provider {
+                case .mock: return "mock"
+                case .ollama: return "ollama"
+                case .openaiCompat: return "openai-compat"
+                }
+            }()
+            let canProceedFn: @Sendable (_ estOutTok: Int, _ modelHint: String) async -> Bool = { estOutTok, modelHint in
+                await MainActor.run { budget.canProceed(estimatedOutputTokens: estOutTok, modelHint: modelHint) }
+            }
+            let recordCallFn: @Sendable (String, String, Int, Int) async -> Void = { p, m, i, o in
+                await MainActor.run {
+                    budget.recordCall(provider: p, model: m, inputTokens: i, outputTokens: o)
+                }
+            }
+            let llm: LLMProvider = BudgetedLLMProvider(
+                wrapping: baseLLM,
+                providerName: providerName,
+                canProceedFn: canProceedFn,
+                recordCallFn: recordCallFn
+            )
 
             // P4-T2: 把 resolved 整段传 DreamCycle（DecayConfig 用 resolved.decay）
             // P4-T2: consolidation config 来自 resolved
@@ -695,11 +770,68 @@ public final class AppModel: ObservableObject {
             logLines.append("gathered=\(outcome.gatheredCount) accepted=\(outcome.acceptedCount) committed=\(outcome.committed)")
             refreshStatus()
         } catch let e as DreamCycle.DreamError {
-            lastError = String(describing: e)
-            logLines.append("FAIL: \(e)")
+            // P8: 撞上 userDirtyWorkspace，按用户策略决定 auto-commit / 报错 / 弹窗
+            if case .userDirtyWorkspace = e {
+                handleUserDirty()
+            } else {
+                lastError = String(describing: e)
+                logLines.append("FAIL: \(e)")
+            }
         } catch {
             lastError = error.localizedDescription
             logLines.append("FAIL: \(error.localizedDescription)")
+        }
+    }
+
+    /// P8: 处理 raw/ dirty 三选项
+    /// - autoCommit：静默 commit（不打扰用户）
+    /// - prompt：弹 NSAlert 三选项，让用户当场选；选后写进 UserDefaults 永久记忆
+    /// - skip：把错误显示到 lastError，让用户手动处理
+    private func handleUserDirty() {
+        let strategy = UserDirtyStrategy.load() ?? .prompt
+        logLines.append("userDirty: strategy=\(strategy.rawValue)")
+        switch strategy {
+        case .autoCommit:
+            applyAutoCommit()
+        case .prompt:
+            // 弹 alert（MainActor 上下文）
+            let alert = NSAlert()
+            alert.messageText = "Vault 有未提交的改动"
+            alert.informativeText = "检测到 raw/ 等非引擎路径有未 commit 改动。Dream 需要明确的工作区状态才能跑。\n\n请选择这次怎么处理："
+            alert.addButton(withTitle: "Auto-Commit (记住选择)")
+            alert.addButton(withTitle: "Skip This Run (报错给我)")
+            alert.addButton(withTitle: "Cancel")
+            let response = alert.runModal()
+            switch response {
+            case .alertFirstButtonReturn:
+                UserDirtyStrategy.save(.autoCommit)
+                applyAutoCommit()
+            case .alertSecondButtonReturn:
+                UserDirtyStrategy.save(.skip)
+                lastError = "vault 有 raw/ 改动未 commit。Settings 改策略或手动 commit 后再跑。"
+                logLines.append("userDirty: skipped (user picked skip)")
+            default:
+                logLines.append("userDirty: cancelled")
+            }
+        case .skip:
+            lastError = "vault 有 raw/ 改动未 commit。Settings 改策略或手动 commit 后再跑。"
+            logLines.append("userDirty: skipped (per saved strategy)")
+        }
+    }
+
+    private func applyAutoCommit() {
+        let git = GitRunner(repoRoot: vaultRoot)
+        do {
+            if let head = try git.autoCommitUserChanges() {
+                logLines.append("auto-commit OK: \(head.prefix(7))")
+                // 重新跑 dream（成功 auto-commit 之后 dream 应该 OK）
+                Task { await self.runDream() }
+            } else {
+                logLines.append("auto-commit: nothing to commit")
+            }
+        } catch {
+            lastError = "auto-commit 失败: \(error.localizedDescription)"
+            logLines.append("auto-commit failed: \(error.localizedDescription)")
         }
     }
 

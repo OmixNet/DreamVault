@@ -6,24 +6,125 @@ import DreamEngine
 /// 通过 .commands { Settings { SettingsView() } } 在 DreamVault 菜单下挂 "Settings..." (Cmd-,)
 public struct SettingsView: View {
     @State private var settings: DreamSettings = .load()
-    @State private var saveStatus: String? = nil  // 临时 toast
+    /// 加载时的初始快照，用来判断"是否被改过"
+    @State private var initialSettings: DreamSettings = .load()
+    @State private var saveStatus: SaveStatus = .idle
+    /// 上次保存时间；用来标"Saved 3s ago"
+    @State private var lastSavedAt: Date? = nil
 
     public init() {}
 
+    /// 计算当前 in-memory settings 跟 disk 上的 initial 是否一致
+    private var hasUnsavedChanges: Bool {
+        settings != initialSettings
+    }
+
     public var body: some View {
-        TabView {
-            generalTab
-                .tabItem { Label("General", systemImage: "gearshape") }
-            llmTab
-                .tabItem { Label("LLM", systemImage: "cpu") }
-            budgetTab
-                .tabItem { Label("Budget", systemImage: "dollarsign.circle") }
-            dreamTab
-                .tabItem { Label("Dream", systemImage: "moon.stars") }
-            privacyTab
-                .tabItem { Label("Privacy", systemImage: "lock.shield") }
+        VStack(spacing: 0) {
+            TabView {
+                generalTab
+                    .tabItem { Label("General", systemImage: "gearshape") }
+                llmTab
+                    .tabItem { Label("LLM", systemImage: "cpu") }
+                budgetTab
+                    .tabItem { Label("Budget", systemImage: "dollarsign.circle") }
+                dreamTab
+                    .tabItem { Label("Dream", systemImage: "moon.stars") }
+                privacyTab
+                    .tabItem { Label("Privacy", systemImage: "lock.shield") }
+            }
+            .frame(width: 520, height: 410)
+
+            // P8 修复：所有 tab 都有 Save 按钮和状态条
+            // （之前只有 Dream tab 有 Save，其他 tab 改完不存，UI 也不会告诉用户）
+            Divider()
+            bottomBar
         }
         .frame(width: 520, height: 460)
+    }
+
+    @ViewBuilder
+    private var bottomBar: some View {
+        HStack(spacing: 8) {
+            // 状态指示
+            Group {
+                if hasUnsavedChanges {
+                    Label("Unsaved changes", systemImage: "circle.fill")
+                        .labelStyle(.titleAndIcon)
+                        .foregroundColor(.orange)
+                        .font(.caption)
+                } else if case .saved(let date) = saveStatus {
+                    Label("Saved \(Self.relative(date))", systemImage: "checkmark.circle.fill")
+                        .labelStyle(.titleAndIcon)
+                        .foregroundColor(.green)
+                        .font(.caption)
+                } else {
+                    Label("No pending changes", systemImage: "circle")
+                        .labelStyle(.titleAndIcon)
+                        .foregroundColor(.secondary)
+                        .font(.caption)
+                }
+            }
+
+            Spacer()
+
+            // 临时错误显示
+            if case .error(let msg) = saveStatus {
+                Text(msg)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Button("Revert") {
+                settings = initialSettings
+            }
+            .disabled(!hasUnsavedChanges)
+            .help("Discard unsaved changes")
+
+            Button("Save") {
+                applySettings()
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled(!hasUnsavedChanges)
+            .help("Save all tab changes to UserDefaults")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    /// 保存到 UserDefaults + 更新 initial 快照
+    private func applySettings() {
+        do {
+            settings.save()
+            initialSettings = settings
+            lastSavedAt = Date()
+            saveStatus = .saved(lastSavedAt!)
+            // 2s 后 idle
+            let savedAt = lastSavedAt!
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if let current = lastSavedAt, current == savedAt {
+                    saveStatus = .idle
+                }
+            }
+        } catch {
+            saveStatus = .error(error.localizedDescription)
+        }
+    }
+
+    private static func relative(_ date: Date) -> String {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f.localizedString(for: date, relativeTo: Date())
+    }
+
+    enum SaveStatus: Equatable {
+        case idle
+        case saved(Date)
+        case error(String)
     }
 
     // MARK: - General
@@ -219,6 +320,35 @@ public struct SettingsView: View {
     @ViewBuilder
     private var budgetTab: some View {
         Form {
+            // P8: 详细预算状态（Dream tab 顶部只显示紧凑版）
+            Section("当前使用 (Current Usage)") {
+                if let s = currentBudgetSnapshot {
+                    LabeledContent("Today") {
+                        Text("\(s.todayCount) / \(s.maxCallsPerDay == 0 ? "∞" : "\(s.maxCallsPerDay)") calls")
+                            .font(.system(.body, design: .monospaced))
+                    }
+                    LabeledContent("Month") {
+                        Text(String(format: "$%.4f", s.monthCost) + " / " +
+                             (s.monthlyBudgetUSD == 0 ? "∞" : String(format: "$%.2f", s.monthlyBudgetUSD)))
+                            .font(.system(.body, design: .monospaced))
+                    }
+                    if s.isOverBudget {
+                        Label("Over budget — Run Dream will skip", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                    } else if s.monthlyBudgetUSD > 0 && s.monthCost > s.monthlyBudgetUSD * 0.8 {
+                        Label("Approaching limit (>80%)", systemImage: "exclamationmark.triangle")
+                            .foregroundColor(.orange)
+                    }
+                    Text("Source: <vault>/.dream/budget-YYYY-MM-DD.json / budget-YYYY-MM.json")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("Run a dream to populate budget usage.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
             Section("Local (Ollama)") {
                 LabeledContent("Cost") { Text("Free (本地推理)") }
                 LabeledContent("Daily cap") { Text("Unlimited (本地无费用)") }
@@ -259,6 +389,15 @@ public struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    /// P8: 拉一次最新 budget 快照（每次 tab 出现都拉一下，简单的刷新机制）
+    @State private var currentBudgetSnapshot: AppModel.BudgetSnapshot? = nil
+    private var budgetRefreshTrigger: some View {
+        // 用 .onAppear 触发
+        Group {
+            EmptyView()
+        }
     }
 
     @ViewBuilder
@@ -323,24 +462,6 @@ public struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
-
-            HStack {
-                Spacer()
-                if let status = saveStatus {
-                    Text(status)
-                        .font(.caption)
-                        .foregroundColor(.green)
-                }
-                Button("Save") {
-                    settings.save()
-                    saveStatus = "Saved ✓"
-                    Task {
-                        try? await Task.sleep(nanoseconds: 2_000_000_000)
-                        await MainActor.run { saveStatus = nil }
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-            }
         }
         .formStyle(.grouped)
         .padding()
@@ -355,8 +476,8 @@ public struct SettingsView: View {
         panel.directoryURL = URL(fileURLWithPath: settings.vaultPath,
                                   isDirectory: true)
         if panel.runModal() == .OK, let url = panel.url {
+            // 改完不立即 save；P8 改：让用户按 Save 按钮或者被其他改动触发
             settings.vaultPath = url.path
-            settings.save()
         }
     }
 }

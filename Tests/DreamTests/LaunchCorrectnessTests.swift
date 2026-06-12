@@ -154,6 +154,37 @@ final class LaunchCorrectnessTests: XCTestCase {
         XCTAssertEqual(onDisk, "edited content")
     }
 
+    // MARK: - P8: CLI 路由修复
+    //
+    // 之前 Entry.swift 把任何不在 cliSubcommands 里的 firstArg 都丢进 GUI。
+    // 这导致 `dream init` / `dream nonsense` 误启 SwiftUI 窗口。
+    // 新规则：firstArg 是 nil / "app" 走 GUI，其他一律 CLI。
+
+    func testRoute_nilFirstArg_goesGUI() {
+        // 双击 / Finder / Spotlight 启动：firstArg == nil
+        XCTAssertFalse(DreamEntry.isCLIRoute(nil), "nil 应该进 GUI 启动 SwiftUI")
+    }
+
+    func testRoute_appToken_goesGUI() {
+        // 显式 `dream app`
+        XCTAssertFalse(DreamEntry.isCLIRoute("app"), "'app' 应该进 GUI")
+    }
+
+    func testRoute_knownSubcommand_goesCLI() {
+        let known: Set<String> = ["run", "rollback", "status", "report", "help", "version"]
+        for sub in known {
+            XCTAssertTrue(DreamEntry.isCLIRoute(sub), "已知 CLI 子命令 '\(sub)' 应该进 CLI")
+        }
+    }
+
+    func testRoute_unknownSubcommand_nowGoesCLI() {
+        // P8 关键修复：未知子命令不再偷偷启 GUI
+        for bad in ["nonsense", "init", "random", "version123", "helpme"] {
+            XCTAssertTrue(DreamEntry.isCLIRoute(bad),
+                          "未知子命令 '\(bad)' 应该进 CLI 走 default 报错，不再启 GUI")
+        }
+    }
+
     // MARK: - helper
 
     private func makeTmpVault() -> URL {
