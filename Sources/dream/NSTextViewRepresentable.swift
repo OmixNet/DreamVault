@@ -14,13 +14,17 @@ import AppKit
 /// 不做的（保持轻量）：
 ///   - 语法高亮（留给后面 T2/T3）
 ///   - 自动补全（留给 T2 wikilink +++)
-public struct NSTextViewRepresentable: NSViewRepresentable {
+    public struct NSTextViewRepresentable: NSViewRepresentable {
 
     @Binding var text: String
     let isEditable: Bool
     let fontSize: CGFloat
     let onCommit: () -> Void        // 切文件/run dream/关窗前调用（autosave 也走这条）
     let onDirtyChange: (Bool) -> Void  // 通知 SwiftUI dirty 状态变化
+    /// P2-A2: Source 模式下点 wikilink（dreamvault://wikilink/<id>）时调用。
+    /// 默认 nil 表示不拦截，走 NSTextView 默认行为（NSWorkspace 打开）。
+    /// Pane 设了它就把 vault 内的 wikilink 解析为文件并切换选中。
+    var onWikilink: ((URL) -> Void)? = nil
 
     public func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSTextView.scrollableTextView()
@@ -96,6 +100,7 @@ public struct NSTextViewRepresentable: NSViewRepresentable {
         coordinator.textView = textView
         coordinator.onCommit = onCommit
         coordinator.onDirtyChange = onDirtyChange
+        coordinator.onWikilink = onWikilink
     }
 
     // MARK: - Coordinator
@@ -107,6 +112,7 @@ public struct NSTextViewRepresentable: NSViewRepresentable {
         var lastSeenExternalText: String = ""
         var onCommit: (() -> Void)?
         var onDirtyChange: ((Bool) -> Void)?
+        var onWikilink: ((URL) -> Void)?
 
         public func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange,
                             replacementString: String?) -> Bool {
@@ -129,6 +135,22 @@ public struct NSTextViewRepresentable: NSViewRepresentable {
                 let isDirty = (newText != self.lastSavedText)
                 self.onDirtyChange?(isDirty)
             }
+        }
+
+        // P2-A2: NSTextView 点 .link attribute 触发。dreamvault:// 拦截处理；
+        // 其他 URL（http/https/file）回退 NSTextView 默认（NSWorkspace 打开）。
+        public func textView(_ textView: NSTextView, clickedOnLink link: Any,
+                             at charIndex: Int) -> Bool {
+            let url: URL?
+            if let u = link as? URL { url = u }
+            else if let s = link as? String { url = URL(string: s) }
+            else { return false }
+            guard let u = url else { return false }
+            if u.scheme == "dreamvault", let handler = onWikilink {
+                handler(u)
+                return true  // 已处理，不要走 NSWorkspace
+            }
+            return false  // 让 NSTextView 走默认（NSWorkspace.shared.open）
         }
     }
 }
