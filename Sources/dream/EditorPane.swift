@@ -150,7 +150,9 @@ public struct EditorPane: View {
             isEditable: editable,
             fontSize: 13,
             onCommit: { state.saveNow() },
-            onDirtyChange: { dirty in state.isDirty = dirty }
+            onDirtyChange: { dirty in state.isDirty = dirty },
+            // P2-A2: Source 模式点 [[wikilink]] 跳到对应文件
+            onWikilink: { url in openWikilink(url) }
         )
         .background(Color(NSColor.textBackgroundColor))
     }
@@ -173,6 +175,16 @@ public struct EditorPane: View {
             }
         }
         .background(Color(NSColor.textBackgroundColor))
+        // P2-A2: 拦截 dreamvault://wikilink/<id> 的点击，
+        // 命中 vault 内 .md 文件就交给 AppModel 切换选中。
+        .environment(\.openURL, OpenURLAction { url in
+            if url.scheme == "dreamvault" {
+                openWikilink(url)
+                return .handled
+            }
+            // 其他 URL（http/https/file://）走系统默认（外部浏览器 / Finder）
+            return .systemAction
+        })
     }
 
     /// 用 T0 的 MarkdownRenderer 渲染：把 NSAttributedString 桥到 SwiftUI AttributedString。
@@ -184,6 +196,19 @@ public struct EditorPane: View {
         }
         // 旧系统降级：纯文本（macOS 13 target 不该到这）
         return AttributedString(ns.string)
+    }
+
+    /// P2-A2: 解析 dreamvault://wikilink/<id>。
+    /// 命中 vault 内 .md 文件 → 选进 editor；未命中 → stderr 提示（不弹 alert，避免 preview 噪音）。
+    private func openWikilink(_ url: URL) {
+        guard let resolved = WikilinkResolver.resolve(url: url, vaultRoot: model.vaultRoot) else {
+            if url.scheme == "dreamvault" {
+                FileHandle.standardError.write(Data(
+                    "[EditorPane] wikilink \(url.absoluteString) not found in vault\n".utf8))
+            }
+            return
+        }
+        model.selectedFile = resolved
     }
 }
 

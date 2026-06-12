@@ -58,41 +58,54 @@ struct MainView: View {
 
 struct VaultBrowser: View {
     @EnvironmentObject var model: AppModel
+    /// P2-A1: 4 个 wiki 子目录（entities/concepts/syntheses/archive）后端 Persister
+    /// 都在写，v0.2.0 browser 只显示 concepts + archive，entities 和 syntheses 的内容
+    /// 对用户隐形。现在补全 + 计数 badge + 可折叠。
+    private struct WikiSection: Identifiable {
+        let id: String
+        let rel: String
+        let system: String
+        let color: Color
+    }
+    private let wikiSections: [WikiSection] = [
+        .init(id: "entities",  rel: "wiki/entities",   system: "person.crop.circle",   color: .blue),
+        .init(id: "concepts",  rel: "wiki/concepts",   system: "link",                 color: .accentColor),
+        .init(id: "syntheses", rel: "wiki/syntheses",  system: "doc.text.magnifyingglass", color: .purple),
+        .init(id: "archive",   rel: "wiki/archive",    system: "archivebox",           color: .gray),
+    ]
 
     var body: some View {
         List(selection: $model.selectedFile) {
             Section("raw/  (\(model.status.rawCandidateCount) 候选)") {
                 ForEach(rawFiles(), id: \.self) { url in
-                    HStack {
-                        Image(systemName: "doc.text")
-                            .foregroundColor(.secondary)
-                        Text(url.lastPathComponent)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    .tag(url as URL?)
+                    fileRow(url: url, system: "doc.text", tint: .secondary)
                 }
             }
-            Section("wiki/concepts/") {
-                ForEach(wikiConceptFiles(), id: \.self) { url in
-                    HStack {
-                        Image(systemName: "link")
-                            .foregroundColor(.accentColor)
-                        Text(url.lastPathComponent)
-                            .lineLimit(1)
+            ForEach(wikiSections) { section in
+                let files = wikiFiles(under: section.rel)
+                DisclosureGroup(
+                    isExpanded: Binding(
+                        get: { expandedSections.contains(section.id) || !files.isEmpty },
+                        set: { newValue in
+                            if newValue { expandedSections.insert(section.id) }
+                            else { expandedSections.remove(section.id) }
+                        }
+                    )
+                ) {
+                    ForEach(files, id: \.self) { url in
+                        fileRow(url: url, system: section.system, tint: section.color)
                     }
-                    .tag(url as URL?)
-                }
-            }
-            Section("wiki/archive/") {
-                ForEach(wikiArchiveFiles(), id: \.self) { url in
+                } label: {
                     HStack {
-                        Image(systemName: "archivebox")
-                            .foregroundColor(.gray)
-                        Text(url.lastPathComponent)
-                            .lineLimit(1)
+                        Image(systemName: section.system).foregroundColor(section.color)
+                        Text(section.rel + "/")
+                        if !files.isEmpty {
+                            Text("(\(files.count))")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
                     }
-                    .tag(url as URL?)
                 }
             }
             Section("top-level") {
@@ -103,6 +116,20 @@ struct VaultBrowser: View {
         }
         .listStyle(.sidebar)
         .frame(minWidth: 200)
+    }
+
+    /// DisclosureGroup 折叠状态：默认全展开
+    @State private var expandedSections: Set<String> = ["entities", "concepts", "syntheses", "archive"]
+
+    @ViewBuilder
+    private func fileRow(url: URL, system: String, tint: Color) -> some View {
+        HStack {
+            Image(systemName: system).foregroundColor(tint)
+            Text(url.lastPathComponent)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .tag(url as URL?)
     }
 
     @ViewBuilder
@@ -121,13 +148,11 @@ struct VaultBrowser: View {
         let dir = model.vaultRoot.appendingPathComponent("raw")
         return (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
     }
-    private func wikiConceptFiles() -> [URL] {
-        let dir = model.vaultRoot.appendingPathComponent("wiki/concepts")
-        return (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-    }
-    private func wikiArchiveFiles() -> [URL] {
-        let dir = model.vaultRoot.appendingPathComponent("wiki/archive")
-        return (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+    /// 列出 wiki 子目录下 .md 文件（按文件名排序）
+    private func wikiFiles(under rel: String) -> [URL] {
+        let dir = model.vaultRoot.appendingPathComponent(rel)
+        let all = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        return all.filter { $0.pathExtension == "md" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 }
 
