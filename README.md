@@ -127,6 +127,64 @@ osascript -e 'tell application "System Events" to tell process "DreamVault" to g
 → windows=1 title="DreamVault" subrole=AXStandardWindow
 ```
 
+## 分发（代码签名 + DMG，v0.2.1 起）
+
+给身边人装需要 (a) 代码签名让 macOS 认这 app，(b) DMG 提供标准 macOS 拖拽安装体验。
+
+### 1. 生成自签名 cert（一次性，0 成本）
+
+```bash
+bash scripts/create-self-signed-cert.sh
+# 生成 Common Name "DreamVault Developer" 的 4096-bit RSA cert，10 年有效期
+# 导入到 ~/Library/Keychains/login.keychain-db
+# 之后 codesign 自动用这个 identity
+```
+
+跟 Apple Developer ID 的差别：
+- **Developer ID** = $99/年 Apple Developer Program + 真公证 + Gatekeeper 不拦
+- **自签名** = 0 成本 + 第一次开 Gatekeeper 拦 + 用户 Right-click → Open 一次性绕过
+
+### 2. Build + 签名 .app
+
+```bash
+bash scripts/build-app.sh
+# 5 步：swift build -c release → 拷 binary → 写 Info.plist →
+#       codesign --options=runtime --sign "DreamVault Developer" → 验证
+#
+# 输出：~/Applications/DreamVault.app
+#       spctl 评估：accepted (override=security disabled)
+```
+
+跳过签名：`DREAMVAULT_SKIP_SIGN=1 bash scripts/build-app.sh`
+指定别的 identity：`DREAMVAULT_SIGN_IDENTITY="<name>" bash scripts/build-app.sh`
+
+### 3. 打 DMG
+
+```bash
+bash scripts/build-dmg.sh
+# 输出：~/Desktop/DreamVault-0.2.1.dmg（约 760 KB，UDZO 压缩）
+# 包含：DreamVault.app + /Applications 软链接
+# 用户双击 → Finder 弹出 → 拖到 Applications 完成安装
+```
+
+### 4. 给身边人
+
+把这个 DMG 文件（`DreamVault-0.2.1.dmg`）丢过去。他们的第一次安装：
+1. 双击 DMG → Finder 弹出
+2. 把 DreamVault.app 拖到 Applications
+3. 第一次启动会弹"无法验证开发者" → System Settings → Privacy & Security → Open Anyway
+4. 之后启动就正常了（cert 已被信任）
+
+### Developer ID 升级路径
+
+等你买了 Apple Developer Program（$99/年）之后：
+1. 从 Xcode → Settings → Accounts → 你的 Apple ID → Manage Certificates → "+" → Developer ID Application
+2. cert 导入 keychain 后 `security find-identity -p codesigning` 能看到
+3. build-app.sh 自动选用第一个 identity（Developer ID 排在前）
+4. 公证：xcrun notarytool submit DreamVault-0.2.1.dmg --keychain-profile <profile> --wait
+5. xcrun stapler staple DreamVault-0.2.1.dmg
+6. spctl --assess --type execute -vv ~/Applications/DreamVault.app 评估变成 accepted（不再 override）
+
 ## 夜间调度（launchd 已实现）
 
 `launchd/com.OmixNet.dreamvault.dream.plist` + `launchd/dream-runner.sh` + `scripts/install.sh` 配套。
