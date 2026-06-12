@@ -37,6 +37,17 @@ public struct ConflictResolutionView: View {
                     .font(.caption)
                     .fontWeight(.medium)
                 Spacer()
+                // P0-8: 大 sheet 模式, 一次一对, 左右并排 + 3 button + Merge
+                if !conflicts.isEmpty {
+                    Button {
+                        showSheet = true
+                    } label: {
+                        Label("Review", systemImage: "rectangle.stack.badge.person.crop")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
                 Button {
                     showAuditLog.toggle()
                 } label: {
@@ -59,6 +70,26 @@ public struct ConflictResolutionView: View {
             }
         }
         .onAppear { reloadAuditLog() }
+        .sheet(isPresented: $showSheet) {
+            // P0-8: 大 sheet 模式弹独立窗口, 一次一对, 左右并排, 3 button + Merge
+            ConflictResolutionSheet(
+                ledger: ledger,
+                onResolve: { choice, mem in
+                    resolve(choice, mem: mem)
+                    // 解决后自动进下一对; 没有则关 sheet
+                    if conflicts.count <= 1 {
+                        showSheet = false
+                    }
+                    _ = choice  // silence
+                },
+                onMerge: { mem in
+                    mergeTarget = mem
+                    mergeSheet = true
+                },
+                onDismiss: { showSheet = false }
+            )
+            .frame(minWidth: 760, minHeight: 520)
+        }
         .sheet(isPresented: $mergeSheet) {
             if let target = mergeTarget,
                let firstOpp = mem_firstOpponent(of: target) {
@@ -260,6 +291,10 @@ public struct ConflictResolutionView: View {
     // P8: Merge sheet 状态
     @State private var mergeSheet: Bool = false
     @State private var mergeTarget: Memory? = nil
+    // P0-8: 大 sheet 模式 (一次一对, 左右并排)
+    @State private var showSheet: Bool = false
+    // P0-8: sheet 内部当前页 (0-based, 0 = 第一对)
+    @State private var sheetIndex: Int = 0
 
     private func toggle(_ id: String) {
         expandedID = (expandedID == id) ? nil : id
@@ -381,5 +416,246 @@ public struct ConflictResolutionView: View {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd-HHmmss"
         return f.string(from: Date())
+    }
+}
+
+// MARK: - P0-8: 大 sheet 模式 (一次一对, 左右并排 + 3 button + Merge 单独)
+
+/// 独立 sheet 视图. 跟 ConflictResolutionView 解耦, 只读 ledger + callback.
+/// - ledger: 拿 conflicts 列表
+/// - onResolve: 用户点 Keep A / Keep B / Archive Both
+/// - onMerge: 用户点 Merge (弹 MergeSheetView)
+/// - onDismiss: 用户点关闭
+@MainActor
+struct ConflictResolutionSheet: View {
+    let ledger: Ledger
+    let onResolve: (ConflictResolutionView.Resolution, Memory) -> Void
+    let onMerge: (Memory) -> Void
+    let onDismiss: () -> Void
+
+    @State private var index: Int = 0
+
+    init(ledger: Ledger,
+         onResolve: @escaping (ConflictResolutionView.Resolution, Memory) -> Void,
+         onMerge: @escaping (Memory) -> Void,
+         onDismiss: @escaping () -> Void) {
+        self.ledger = ledger
+        self.onResolve = onResolve
+        self.onMerge = onMerge
+        self.onDismiss = onDismiss
+    }
+
+    private var conflicts: [Memory] {
+        ledger.memories.filter { !$0.contradicts.isEmpty }
+    }
+
+    private var current: Memory? {
+        guard index >= 0, index < conflicts.count else { return nil }
+        return conflicts[index]
+    }
+
+    private var opponent: Memory? {
+        guard let mem = current,
+              let firstID = mem.contradicts.first else { return nil }
+        return ledger.memories.first(where: { $0.id == firstID })
+    }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            content
+            Divider()
+            footer
+        }
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Conflict Resolution")
+                    .font(.title3).bold()
+                Text("\(conflicts.count) pair\(conflicts.count == 1 ? "" : "s") need decision · showing \(min(index + 1, conflicts.count))/\(conflicts.count)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Button("Close") { onDismiss() }
+                .keyboardShortcut(.cancelAction)
+        }
+        .padding(16)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let mem = current, let opp = opponent {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    candidateCard(label: "A", id: mem.id, text: mem.text,
+                                  sources: mem.sources,
+                                  isCurrent: true)
+                    VStack {
+                        Spacer()
+                        Image(systemName: "arrow.left.and.right")
+                            .font(.title2)
+                            .foregroundColor(.secondary)
+                        Text("contradicts")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    .frame(width: 80)
+                    candidateCard(label: "B", id: opp.id, text: opp.text,
+                                  sources: opp.sources,
+                                  isCurrent: false)
+                }
+                .frame(maxWidth: .infinity)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Sources")
+                            .font(.caption).bold()
+                            .foregroundColor(.secondary)
+                        ForEach(mem.sources, id: \.file) { s in
+                            Text("• \(s.file):\(s.line)  \(s.excerpt.prefix(120))")
+                                .font(.system(.caption2, design: .monospaced))
+                                .lineLimit(2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(4)
+                }
+                .frame(maxHeight: 80)
+            }
+            .padding(16)
+        } else if conflicts.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 40))
+                    .foregroundColor(.green)
+                Text("All conflicts resolved")
+                    .font(.headline)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(40)
+        } else {
+            // 越界: 自动跳回
+            Color.clear.onAppear { index = 0 }
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            // P0-8: 3 个主按钮 (左侧 destructive, 中性居中, 右侧 keep)
+            Button(role: .destructive) {
+                if let mem = current {
+                    onResolve(.archiveBoth, mem)
+                    advance()
+                }
+            } label: {
+                Label("Archive Both", systemImage: "trash")
+                    .frame(maxWidth: .infinity)
+            }
+            .disabled(current == nil)
+            .controlSize(.large)
+
+            Button {
+                if let mem = current {
+                    onResolve(.keepA, mem)
+                    advance()
+                }
+            } label: {
+                Label("Keep A", systemImage: "a.circle")
+                    .frame(maxWidth: .infinity)
+            }
+            .disabled(current == nil)
+            .controlSize(.large)
+            .keyboardShortcut("a", modifiers: [.command])
+
+            Button {
+                if let mem = current {
+                    onResolve(.keepB, mem)
+                    advance()
+                }
+            } label: {
+                Label("Keep B", systemImage: "b.circle")
+                    .frame(maxWidth: .infinity)
+            }
+            .disabled(current == nil)
+            .controlSize(.large)
+            .keyboardShortcut("b", modifiers: [.command])
+
+            // P0-8: Merge 单独, 不动 Resolved 状态
+            Button {
+                if let mem = current { onMerge(mem) }
+            } label: {
+                Label("Merge…", systemImage: "arrow.triangle.merge")
+                    .frame(maxWidth: .infinity)
+            }
+            .disabled(current == nil || opponent == nil)
+            .controlSize(.large)
+
+            // 翻页
+            Spacer()
+            HStack(spacing: 4) {
+                Button {
+                    if index > 0 { index -= 1 }
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .disabled(index == 0)
+                Button {
+                    if index < conflicts.count - 1 { index += 1 }
+                } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .disabled(index >= conflicts.count - 1)
+            }
+            .controlSize(.small)
+        }
+        .padding(12)
+    }
+
+    private func advance() {
+        // conflicts 列表在 onResolve 后会少一个 (resolve 后 archived, contradicts 清空,
+        // 但 ledger 是值类型, callback 不返回新 ledger; sheet 自己 reload 即可)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000)  // 等 model.refreshStatus
+            let newCount = ledger.memories.filter { !$0.contradicts.isEmpty }.count
+            if newCount == 0 {
+                onDismiss()
+            } else if index >= newCount {
+                index = max(0, newCount - 1)
+            }
+        }
+    }
+
+    private func candidateCard(label: String, id: String, text: String,
+                               sources: [SourceRef], isCurrent: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(label)
+                    .font(.title2).bold()
+                    .foregroundColor(.white)
+                    .frame(width: 28, height: 28)
+                    .background(isCurrent ? Color.blue : Color.gray)
+                    .clipShape(Circle())
+                Text(id)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                Spacer()
+            }
+            Text(text)
+                .font(.body)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(4)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
