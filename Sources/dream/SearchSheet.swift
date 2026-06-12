@@ -47,6 +47,12 @@ public struct SearchSheet: View {
                 List(searcher.results) { r in
                     Button {
                         model.selectedFile = r.path
+                        // P9c-P0-2: 搜索结果命中若是某条 memory 的 wiki 页，强化一下
+                        // （EditorPane 的 .onReceive 也会触发 wikiOpen，但 searchClick 是独立 source，
+                        //  两者同日不互防抖）
+                        if let id = Reinforcer.memoryID(forVaultRelPath: r.id) {
+                            _ = model.reinforcer.reinforce(memoryID: id, source: .searchClick)
+                        }
                         onDismiss()
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {

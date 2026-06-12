@@ -31,6 +31,11 @@ public struct EditorPane: View {
         .onReceive(model.$selectedFile.compactMap { $0 }) { url in
             // 上层切换文件时：flush 旧 → load 新
             _ = state.openFile(url)
+            // P9c-P0-2: 如果打开的是某条 memory 的 wiki 页，强化一下
+            // （Reinforcer 内部会判定 durable 状态、per-day debounce）
+            if let id = Reinforcer.memoryID(forVaultFile: url, vaultRoot: model.vaultRoot) {
+                _ = model.reinforcer.reinforce(memoryID: id, source: .wikiOpen)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             // 关窗前 force flush
