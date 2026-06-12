@@ -18,23 +18,23 @@ public struct InsertWikilinkView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Spacing.md) {
             Text("Insert Wikilink")
-                .font(.title3).bold()
+                .font(AppFont.title3)
             Text("Target 是要跳转的页名 (e.g. \"swiftui\" 或 \"raw/notes.md\")。Alias 是显示文字 (留空用 target)。")
-                .font(.caption)
-                .foregroundColor(.secondary)
-            VStack(alignment: .leading, spacing: 4) {
+                .font(AppFont.caption)
+                .foregroundColor(AppColor.textSecondary)
+            VStack(alignment: .leading, spacing: Spacing.xs) {
                 Text("Target")
-                    .font(.caption).bold()
+                    .font(AppFont.caption).bold()
                 TextField("e.g. swiftui", text: $target)
                     .textFieldStyle(.roundedBorder)
                     .focused($targetFocused)
                     .onSubmit { commit() }
             }
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: Spacing.xs) {
                 Text("Alias (optional)")
-                    .font(.caption).bold()
+                    .font(AppFont.caption).bold()
                 TextField("e.g. SwiftUI 笔记", text: $alias)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { commit() }
@@ -42,10 +42,10 @@ public struct InsertWikilinkView: View {
             // 预览
             if !target.isEmpty {
                 Text("Preview: \(WikiLinkExtractor.insertionString(target: target, alias: alias.isEmpty ? nil : alias))")
-                    .font(.system(.caption, design: .monospaced))
-                    .padding(6)
-                    .background(Color(NSColor.controlBackgroundColor))
-                    .cornerRadius(4)
+                    .font(AppFont.monoSmall)
+                    .padding(Spacing.xs + 2)
+                    .background(AppColor.surface)
+                    .cornerRadius(Radius.sm)
             }
             HStack {
                 Spacer()
@@ -56,7 +56,7 @@ public struct InsertWikilinkView: View {
                     .disabled(target.isEmpty)
             }
         }
-        .padding(16)
+        .padding(Spacing.lg)
         .frame(width: 380, height: 280)
         .onAppear { targetFocused = true }
     }

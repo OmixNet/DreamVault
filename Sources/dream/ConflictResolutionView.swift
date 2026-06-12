@@ -189,7 +189,7 @@ public struct ConflictResolutionView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(6)
+                .padding(Spacing.sm)
             }
             .background(Color(NSColor.controlBackgroundColor))
             .cornerRadius(4)
@@ -270,7 +270,7 @@ public struct ConflictResolutionView: View {
                             .foregroundColor(.secondary)
                         Text(opponent.text)
                             .font(.caption)
-                            .padding(6)
+                            .padding(Spacing.sm)
                             .background(Color(NSColor.controlBackgroundColor))
                             .cornerRadius(4)
                     }
@@ -484,7 +484,7 @@ struct ConflictResolutionSheet: View {
             Button("Close") { onDismiss() }
                 .keyboardShortcut(.cancelAction)
         }
-        .padding(16)
+        .padding(Spacing.lg)
     }
 
     @ViewBuilder
@@ -523,14 +523,14 @@ struct ConflictResolutionSheet: View {
                                 .foregroundColor(.secondary)
                         }
                     }
-                    .padding(8)
+                    .padding(Spacing.sm)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(NSColor.controlBackgroundColor))
                     .cornerRadius(4)
                 }
                 .frame(maxHeight: 80)
             }
-            .padding(16)
+            .padding(Spacing.lg)
         } else if conflicts.isEmpty {
             VStack(spacing: 8) {
                 Image(systemName: "checkmark.seal.fill")
@@ -616,7 +616,7 @@ struct ConflictResolutionSheet: View {
             }
             .controlSize(.small)
         }
-        .padding(12)
+        .padding(Spacing.md)
     }
 
     private func advance() {
@@ -652,7 +652,7 @@ struct ConflictResolutionSheet: View {
             Text(text)
                 .font(.body)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
+                .padding(Spacing.sm)
                 .background(Color(NSColor.controlBackgroundColor))
                 .cornerRadius(4)
         }

@@ -205,18 +205,18 @@ public struct GraphWindow: View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Spacing.xxs) {
                     Text("Knowledge Graph")
-                        .font(.title3).bold()
+                        .font(AppFont.title3)
                     Text("\(graph.nodes.count) nodes · \(edgeList.count) edges")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(AppFont.caption)
+                        .foregroundColor(AppColor.textSecondary)
                 }
                 Spacer()
                 Button("Close") { onDismiss() }
                     .keyboardShortcut(.cancelAction)
             }
-            .padding(12)
+            .padding(Spacing.md)
             Divider()
             // Canvas
             GraphRenderer(
@@ -233,28 +233,28 @@ public struct GraphWindow: View {
             Divider()
             // Footer: 选中节点详情
             if let id = selectedID, let m = memories[id] {
-                HStack(alignment: .top, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .top, spacing: Spacing.sm) {
+                    VStack(alignment: .leading, spacing: Spacing.xxs) {
                         Text(m.text)
-                            .font(.body)
+                            .font(AppFont.body)
                             .lineLimit(3)
                         Text("id: \(m.id) · kind: \(m.kind.rawValue) · decay: \(m.decayClass.rawValue)")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
+                            .font(AppFont.caption2)
+                            .foregroundColor(AppColor.textSecondary)
                     }
                     Spacer()
                     Button("Open") { onTap(m) }
                         .controlSize(.small)
                 }
-                .padding(12)
+                .padding(Spacing.md)
             } else {
                 HStack {
                     Text("Click a node to open it")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(AppFont.caption)
+                        .foregroundColor(AppColor.textSecondary)
                     Spacer()
                 }
-                .padding(12)
+                .padding(Spacing.md)
             }
         }
         .frame(width: 800, height: 600)

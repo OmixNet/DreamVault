@@ -21,16 +21,16 @@ public struct SerendipityBanner: View {
     }
 
     public var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: Spacing.sm) {
             Image(systemName: "lightbulb.fill")
-                .foregroundColor(.yellow)
-                .font(.body)
-            VStack(alignment: .leading, spacing: 2) {
+                .foregroundColor(AppColor.warning)
+                .font(AppFont.body)
+            VStack(alignment: .leading, spacing: Spacing.xxs) {
                 Text("\(pick.daysSinceAccess) 天前你看到")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .font(AppFont.caption2)
+                    .foregroundColor(AppColor.textSecondary)
                 Text(pick.memory.text)
-                    .font(.subheadline)
+                    .font(AppFont.body)
                     .lineLimit(2)
             }
             Spacer()
@@ -46,12 +46,11 @@ public struct SerendipityBanner: View {
                 onDismiss()
             } label: {
                 Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(.secondary)
+                    .foregroundColor(AppColor.textSecondary)
             }
             .buttonStyle(.borderless)
         }
-        .padding(8)
-        .background(Color.yellow.opacity(0.15))
-        .cornerRadius(6)
+        .padding(Spacing.sm)
+        .bannerStyle(.warning)
     }
 }
