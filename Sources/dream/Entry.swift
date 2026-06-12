@@ -174,6 +174,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct DreamVaultApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var model = AppModel()
+    /// P3-C1: 原生菜单 + 标准 macOS key bindings。
+    /// macOS 13 用 @FocusedValue（macOS 14+ 才升 @FocusedObject）。
+    /// MainView 在 view 树里设置这两个 focused value，.commands 自动读到。
+    @FocusedValue(\.appModel) private var focusedModel
+    @FocusedValue(\.editorState) private var editorState
+
+    private var menuModel: AppModel { focusedModel ?? model }
 
     var body: some Scene {
         WindowGroup("DreamVault") {
@@ -183,8 +190,196 @@ struct DreamVaultApp: App {
         }
         .windowResizability(.contentMinSize)
         .commands {
-            CommandGroup(replacing: .newItem) { }  // 去掉默认 New File
+            // 去掉默认 New File（用我们的 New Note 替代）
+            CommandGroup(replacing: .newItem) {
+                Button("New Note") {
+                    AppActions.newNote(model: menuModel, editorState: editorState)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
+            // File 菜单（在 New Item 之后插入 Open / Reveal）
+            CommandGroup(after: .newItem) {
+                Divider()
+                Button("Open Vault...") { AppActions.openVault(model: menuModel) }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+                Button("Open File...") { AppActions.openFile(model: menuModel) }
+                    .keyboardShortcut("o", modifiers: .command)
+                Divider()
+                Button("Reveal in Finder") {
+                    if let f = menuModel.selectedFile {
+                        NSWorkspace.shared.activateFileViewerSelecting([f])
+                    }
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(menuModel.selectedFile == nil)
+                Divider()
+                Button("Export Diagnostics...") {
+                    AppActions.exportDiagnostics(model: menuModel)
+                }
+            }
+            // View 菜单
+            CommandMenu("View") {
+                Button("Source") {
+                    editorState?.mode = .source
+                }
+                .keyboardShortcut("1", modifiers: .command)
+                Button("Preview") {
+                    editorState?.mode = .preview
+                }
+                .keyboardShortcut("2", modifiers: .command)
+                Button("Split") {
+                    editorState?.mode = .split
+                }
+                .keyboardShortcut("3", modifiers: .command)
+            }
+            // Dream 菜单
+            CommandMenu("Dream") {
+                Button("Run Dream") {
+                    _ = editorState?.flushIfDirty()
+                    Task { await menuModel.runDream() }
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(menuModel.isRunning)
+                Button("Refresh Status") { menuModel.refreshStatus() }
+                Divider()
+                Button(role: .destructive) {
+                    menuModel.rollback()
+                } label: {
+                    Text("Rollback Last Dream")
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(menuModel.isRunning)
+            }
+            // Help 菜单加项目链接
+            CommandGroup(replacing: .help) {
+                Link("DreamVault on GitHub",
+                     destination: URL(string: "https://github.com/OmixNet/DreamVault")!)
+                Link("Architecture & Docs",
+                     destination: URL(string: "https://github.com/OmixNet/DreamVault/blob/main/docs/ARCHITECTURE.md")!)
+            }
         }
+    }
+}
+
+// MARK: - 菜单 action helpers（避免在 View body 里堆一堆闭包）
+
+@MainActor
+enum AppActions {
+    /// 在 vault 根创建一个新的 .md 文件并打开
+    static func newNote(model: AppModel, editorState: EditorState?) {
+        // P0-1: 先 flush 当前 editor
+        _ = editorState?.flushIfDirty()
+        let stamp = Self.timestamp()
+        let newURL = model.vaultRoot.appendingPathComponent("\(stamp).md")
+        let initial = "# \(stamp)\n\n"
+        do {
+            try initial.write(to: newURL, atomically: true, encoding: .utf8)
+            model.selectedFile = newURL
+        } catch {
+            FileHandle.standardError.write(Data(
+                "[AppActions] newNote 写盘失败：\(error.localizedDescription)\n".utf8))
+        }
+    }
+
+    /// NSOpenPanel 选 vault 目录
+    static func openVault(model: AppModel) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Open Vault"
+        panel.message = "选择 vault 根目录（含 raw/ + wiki/ + .git/）"
+        if panel.runModal() == .OK, let url = panel.url {
+            model.switchVault(to: url)
+        }
+    }
+
+    /// NSOpenPanel 选 vault 内的 .md 文件
+    static func openFile(model: AppModel) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.init(filenameExtension: "md")].compactMap { $0 }
+        panel.directoryURL = model.vaultRoot
+        if panel.runModal() == .OK, let url = panel.url {
+            model.selectedFile = url
+        }
+    }
+
+    /// 收集诊断信息（vaultRoot / status / logLines / git HEAD）写到桌面
+    static func exportDiagnostics(model: AppModel) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "dreamvault-diagnostics.txt"
+        panel.allowedContentTypes = [.plainText]
+        panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory() + "/Desktop")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        var lines: [String] = []
+        lines.append("=== DreamVault Diagnostics ===")
+        lines.append("Date: \(Date())")
+        lines.append("Vault: \(model.vaultRoot.path)")
+        lines.append("Selected file: \(model.selectedFile?.path ?? "nil")")
+        lines.append("")
+        lines.append("--- Status ---")
+        lines.append("raw candidate: \(model.status.rawCandidateCount)")
+        lines.append("total memories: \(model.status.totalMemories)")
+        lines.append("durable: \(model.status.durableCount)")
+        lines.append("candidate: \(model.status.candidateCount)")
+        lines.append("archived: \(model.status.archivedCount)")
+        lines.append("needs review: \(model.status.withContradictsCount)")
+        if let r = model.lastOutcome {
+            lines.append("")
+            lines.append("--- Last Run ---")
+            lines.append("gathered: \(r.gatheredCount)")
+            lines.append("accepted: \(r.acceptedCount)")
+            lines.append("archived: \(r.archivedCount)")
+            lines.append("needs review: \(r.needsReviewCount)")
+            lines.append("committed: \(r.committed)")
+        }
+        if let err = model.lastError {
+            lines.append("")
+            lines.append("--- Last Error ---")
+            lines.append(err)
+        }
+        lines.append("")
+        lines.append("--- Log (last 100 lines) ---")
+        lines.append(contentsOf: model.logLines.suffix(100))
+        // git HEAD
+        let git = GitRunner(repoRoot: model.vaultRoot)
+        if let head = try? git.run(["log", "--oneline", "-5"] as [String]) {
+            lines.append("")
+            lines.append("--- git HEAD ---")
+            lines.append(head)
+        }
+        let content = lines.joined(separator: "\n")
+        do {
+            try content.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            FileHandle.standardError.write(Data(
+                "[AppActions] exportDiagnostics 失败：\(error.localizedDescription)\n".utf8))
+        }
+    }
+
+    private static func timestamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd-HHmmss"
+        return f.string(from: Date())
+    }
+}
+
+// MARK: - FocusedObject key 桥接 AppModel + EditorState 到 .commands
+
+private struct AppModelFocusedKey: FocusedValueKey { typealias Value = AppModel }
+private struct EditorStateFocusedKey: FocusedValueKey { typealias Value = EditorState }
+
+extension FocusedValues {
+    var appModel: AppModel? {
+        get { self[AppModelFocusedKey.self] }
+        set { self[AppModelFocusedKey.self] = newValue }
+    }
+    var editorState: EditorState? {
+        get { self[EditorStateFocusedKey.self] }
+        set { self[EditorStateFocusedKey.self] = newValue }
     }
 }
 
