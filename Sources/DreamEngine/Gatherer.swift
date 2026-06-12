@@ -66,6 +66,10 @@ public struct Gatherer {
         public let gatheredFiles: [String]
         /// P8: 脱敏命中统计（每类多少处）。为空 = 没启用 redactBeforeConsolidate / 没命中。
         public let redactionCounts: [String: Int]
+        /// P0-3: 源文件内容 (relPath -> 脱敏后的 body), 供 SourceRefValidator 闸门
+        /// 校验 draft.sourceExcerpt 是否真在源文件里.
+        /// nil = 旧格式 (向后兼容) / 文件被删 / 拼装 dummy 时
+        public let sourceContents: [String: String]
     }
 
     /// 扫描 raw/，返回脱敏后的候选 Memory 列表。
@@ -75,7 +79,8 @@ public struct Gatherer {
         let fm = FileManager.default
         let rawDir = vaultRoot.appendingPathComponent(rawSubdir)
         guard fm.fileExists(atPath: rawDir.path) else {
-            return GatherResult(candidates: [], gatheredFiles: [], redactionCounts: [:])
+            return GatherResult(candidates: [], gatheredFiles: [],
+                                redactionCounts: [:], sourceContents: [:])
         }
         let processed = Self.loadProcessedRegistry(vaultRoot: vaultRoot)
 
@@ -86,6 +91,8 @@ public struct Gatherer {
         var candidates: [Memory] = []
         var gathered: [String] = []
         var redactionCounts: [String: Int] = [:]
+        // P0-3: 源文件内容 (relPath -> body), 供 SourceRefValidator 闸门
+        var sourceContents: [String: String] = [:]
 
         for file in files {
             let relPath = "\(rawSubdir)/\(file.lastPathComponent)"
@@ -115,10 +122,13 @@ public struct Gatherer {
                 sources: [SourceRef(file: relPath, line: doc.bodyStartLine, excerpt: excerpt)],
                 status: .candidate))
             gathered.append(relPath)
+            // P0-3: 把脱敏后的 body 存进 sourceContents (供 SourceRefValidator 校验)
+            sourceContents[relPath] = redactedBody
         }
         return GatherResult(candidates: candidates,
                             gatheredFiles: gathered,
-                            redactionCounts: redactionCounts)
+                            redactionCounts: redactionCounts,
+                            sourceContents: sourceContents)
     }
 
     // MARK: - processed 登记（.dream/processed.json，替代写回 raw 的 processed:true）

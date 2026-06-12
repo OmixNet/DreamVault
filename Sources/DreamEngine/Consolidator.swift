@@ -46,13 +46,37 @@ public struct Consolidator {
     public let llm: LLMProvider
     public let config: ConsolidationConfig
     public let redactor: Redactor
+    /// P0-3: 源文件内容 (relPath -> 脱敏后 body), 供 SourceRefValidator 闸门校验 draft.excerpt
+    /// 是不是真在源文件里. nil = 旧调用方, 闸门降级为 "全通过" (向后兼容).
+    public let sourceContents: [String: String]
 
     public init(llm: LLMProvider,
                 config: ConsolidationConfig = .init(),
-                redactor: Redactor = Redactor()) {
+                redactor: Redactor = Redactor(),
+                sourceContents: [String: String] = [:]) {
         self.llm = llm
         self.config = config
         self.redactor = redactor
+        self.sourceContents = sourceContents
+    }
+
+    /// P0-3: 跑闸门. 返回 (通过?, 拒收数).
+    /// - 通过: true
+    /// - 拒收: false (调用方把拒收数累加到 rejectedFabricatedCount)
+    /// 设计: 不 mutating self, 让并发 TaskGroup 路径也能用
+    func checkSourceRefGate(draftExcerpt: String, draftFile: String) -> (passed: Bool, rejectedCount: Int) {
+        let lookup = sourceContents
+        let (passed, rejected) = SourceRefValidator.validateBatch(
+            refs: [(relPath: draftFile, excerpt: draftExcerpt)],
+            fileContentLookup: lookup
+        )
+        if !rejected.isEmpty {
+            FileHandle.standardError.write(Data(
+                "[P0-3] fabricated excerpt rejected: file=\(draftFile) excerpt=\"\(draftExcerpt.prefix(80))\"\n".utf8))
+            return (false, rejected.count)
+        }
+        _ = passed
+        return (true, 0)
     }
 
     // MARK: - P3-T2: LLM 重试 + 指数退避
@@ -122,11 +146,21 @@ public struct Consolidator {
 
     /// 完整流水线：原始候选教训 → 经四闸过滤后的可信教训
     /// 闸门 0（脱敏）→ 1（有来源）→ 3（回读校验）→ 2（分级）
-    public func consolidate(_ raw: [Memory]) async throws -> [Memory] {
+    public func consolidate(_ raw: [Memory], rejectedFabricated: inout Int) async throws -> [Memory] {
         var out: [Memory] = []
         for var m in raw {
             if config.redactBeforeConsolidate { m = redactor.redact(m) }  // 闸门 0
             guard hasSource(m) else { continue }            // 闸门 1
+            // P0-3 假 excerpt 闸门 (2 步路径: candidate 自己 excerpt, 来自 Gatherer
+            // 直接拷源文件, 通常通过; 但若用户改 raw 文件可能出问题 → 防御性拦)
+            if !sourceContents.isEmpty {
+                let firstSource = m.sources.first
+                if let s = firstSource, !s.excerpt.isEmpty {
+                    let gate = checkSourceRefGate(draftExcerpt: s.excerpt, draftFile: s.file)
+                    rejectedFabricated += gate.rejectedCount
+                    guard gate.passed else { continue }
+                }
+            }
             guard try await verify(m) else { continue }     // 闸门 3
             m.status = classify(m)                           // 闸门 2
             out.append(m)
@@ -310,18 +344,23 @@ public struct Consolidator {
     ///
     /// 并发：多个 candidates 之间用 TaskGroup 并发（同一 candidate 内 analyze →
     /// generate → verify 是依赖链，不能并发）。上限由 config.concurrency 控制。
+    /// P0-3: rejectedFabricated inout 累加器. **串行路径用 inout 累加**; 并发路径因 escaping
+    /// closure 不能 capture inout, 改回 in-memory Atomic 计数器.
     public func consolidate3Step(
         _ raw: [Memory],
-        consolidate2StepFallback: Bool? = nil
+        consolidate2StepFallback: Bool? = nil,
+        rejectedFabricated: inout Int
     ) async throws -> [Memory] {
         let fallback = consolidate2StepFallback ?? config.fallbackOnThreeStepFailure
         let limit = max(1, min(4, config.concurrency))  // P3-T2: cap 4 防 OOM
 
         // 并发上限 1 = 完全串行（等价旧行为），跳过 TaskGroup
         if limit <= 1 {
-            return try await consolidate3StepSerial(raw, fallback: fallback)
+            return try await consolidate3StepSerial(raw, fallback: fallback, rejectedFabricated: &rejectedFabricated)
         }
 
+        // 并发路径: 用 final class 计数器 (escaping closure 安全)
+        let counter = CounterBox()
         return try await withThrowingTaskGroup(of: [Memory].self) { group in
             var iter = raw.makeIterator()
             var inflight = 0
@@ -334,7 +373,10 @@ public struct Consolidator {
                 inflight += 1
                 group.addTask { [self] in
                     do {
-                        return try await self.consolidate3StepOne(m, fallback: fallback)
+                        var localCount = 0
+                        let result = try await self.consolidate3StepOne(m, fallback: fallback, rejectedFabricated: &localCount)
+                        await counter.add(localCount)
+                        return result
                     } catch {
                         // 不让一个 candidate 抛错导致整批都丢 —— 吞掉，记到 firstError。
                         // 如果 fallback=false 且用户希望"任一阶段崩了整批终止"，
@@ -360,22 +402,44 @@ public struct Consolidator {
                 FileHandle.standardError.write(Data(
                     "[Consolidator] 三段失败 (fallback=false 但吞掉以保护整批): \(firstError)\n".utf8))
             }
+            // P0-3: 并发路径回填 inout 计数
+            rejectedFabricated += await counter.value()
             return collected
         }
     }
 
+
+
+    /// P0-3 helper: 并发路径 in-memory 计数器 (escaping closure 不能 capture inout)
+
+    /// P0-3 helper: 并发路径 in-memory 计数器 (escaping closure 不能 capture inout)
+    private final class CounterBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var v: Int = 0
+        func add(_ n: Int) {
+            lock.lock(); v += n; lock.unlock()
+        }
+        func value() async -> Int {
+            lock.lock(); defer { lock.unlock() }
+            return v
+        }
+    }
+
     /// 三段式串行版本（concurrency=1 时用，调试/回归用）
-    private func consolidate3StepSerial(_ raw: [Memory], fallback: Bool) async throws -> [Memory] {
+    private func consolidate3StepSerial(_ raw: [Memory], fallback: Bool,
+                                         rejectedFabricated: inout Int) async throws -> [Memory] {
         var out: [Memory] = []
         for var m in raw {
-            out.append(contentsOf: try await consolidate3StepOne(m, fallback: fallback))
+            out.append(contentsOf: try await consolidate3StepOne(m, fallback: fallback, rejectedFabricated: &rejectedFabricated))
         }
         return out
     }
 
     /// 三段式处理单个 candidate（含脱敏 + 来源真实性闸 + verify + fallback）。
     /// 失败时按 fallback 决定是回退到 2 步还是重新抛出。
-    func consolidate3StepOne(_ m: Memory, fallback: Bool) async throws -> [Memory] {
+    /// P0-3: rejectedFabricated 是 inout 累加器 (并发安全, 调用方传)
+    func consolidate3StepOne(_ m: Memory, fallback: Bool,
+                             rejectedFabricated: inout Int) async throws -> [Memory] {
         var mem = m
         if config.redactBeforeConsolidate { mem = redactor.redact(mem) }
         guard hasSource(mem) else { return [] }
@@ -396,6 +460,16 @@ public struct Consolidator {
                 // 来源真实性闸：sourceFile 必须与原 candidate 的 source 同文件
                 guard mem.sources.contains(where: { $0.file == d.sourceFileSafe })
                 else { continue }
+                // P0-3: 假 excerpt 闸门 (确定性, 0 LLM).
+                // draft.sourceExcerpt 归一化后必须真在源文件里, 否则 fabricated.
+                // 跟 mem.sources[0].excerpt 同样长度的 excerpt 由 Gatherer 直接来自源文件,
+                // 所以这条闸门**只在 LLM 生成的 excerpt 偏离真实内容时**触发.
+                if !sourceContents.isEmpty {
+                    let gate = checkSourceRefGate(draftExcerpt: d.sourceExcerptSafe,
+                                                  draftFile: d.sourceFileSafe)
+                    rejectedFabricated += gate.rejectedCount
+                    guard gate.passed else { continue }
+                }
                 // 优先级：draft 自己给的 kindRaw > analyze 推荐的 > 默认 concept
                 let resolvedKind: MemoryKind = {
                     if let raw = d.kindRaw, !raw.isEmpty,
@@ -417,7 +491,7 @@ public struct Consolidator {
         } catch {
             if fallback {
                 // 三段任一失败：回退到两段（旧行为）
-                return try await consolidate([mem])
+                return try await consolidate([mem], rejectedFabricated: &rejectedFabricated)
             }
             throw error
         }
@@ -425,11 +499,15 @@ public struct Consolidator {
 
     /// 智能入口：根据 config.useThreeStepCoT 选择 3 段或 2 段。
     /// 这是 DreamCycle 应该调的主入口。
-    public func consolidateSmart(_ raw: [Memory]) async throws -> [Memory] {
+    /// P0-3: 返回值里含 rejectedFabricated 计数 (旧调用方忽略, DreamCycle 装 Outcome)
+    public func consolidateSmart(_ raw: [Memory]) async throws -> (accepted: [Memory], rejectedFabricated: Int) {
+        var rejectedFabricated = 0
         if config.useThreeStepCoT {
-            return try await consolidate3Step(raw)
+            let out = try await consolidate3Step(raw, rejectedFabricated: &rejectedFabricated)
+            return (out, rejectedFabricated)
         }
-        return try await consolidate(raw)
+        let out = try await consolidate(raw, rejectedFabricated: &rejectedFabricated)
+        return (out, rejectedFabricated)
     }
 
     // MARK: - JSON 解析小工具（容错：LLM 偶尔会裹 markdown ```json``` 块）
@@ -484,7 +562,8 @@ public struct Consolidator {
         _ raw: [Memory],
         against existing: [Memory]
     ) async throws -> (accepted: [Memory], updatedExisting: [Memory]) {
-        let accepted = try await consolidate(raw)
+        var rejectedFabricated = 0
+        let accepted = try await consolidate(raw, rejectedFabricated: &rejectedFabricated)
         var detector = ContradictionDetector(llm: llm)
         let linked = try await detector.link(candidates: accepted, against: existing)
         return (linked.candidates, linked.existing)
