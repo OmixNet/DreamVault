@@ -171,24 +171,27 @@ struct ConflictMockLLM: LLMProvider {
 }
 
 final class ContradictionDetectorTests: XCTestCase {
-    func mem(_ id: String, _ text: String, status: MemoryStatus = .durable) -> Memory {
+    func mem(_ id: String, _ text: String, status: MemoryStatus = .durable, sourceFile: String = "raw/a.md") -> Memory {
         Memory(id: id, text: text,
-               sources: [SourceRef(file: "raw/a.md", line: 1, excerpt: "e")],
+               sources: [SourceRef(file: sourceFile, line: 1, excerpt: "e")],
                status: status)
     }
 
     func testLinksContradictionBidirectionally() async throws {
-        // 当 prompt 含 "AppKit" 时判为矛盾
-        let d = ContradictionDetector(llm: ConflictMockLLM(conflictWhenContains: "AppKit"))
-        let cand = [mem("c1", "应该用 AppKit")]
-        let existing = [mem("e1", "一律用 SwiftUI")]
+        // P0-1 改动: 两边共享源文件 + 共享 "swiftui" 实体 token,
+        // 预筛通过 (Adamic-Adar > 0 + token 重合) → LLM 调 → mock 判 CONFLICT
+        // 旧 test 用 "应该用 AppKit" vs "一律用 SwiftUI" 无 token 重合, 预筛直接淘汰了.
+        var d = ContradictionDetector(llm: ConflictMockLLM(conflictWhenContains: "AppKit"))
+        let sharedSrc = "raw/ui-design.md"
+        let cand = [mem("c1", "应该用 AppKit 写 macOS 界面", sourceFile: sharedSrc)]
+        let existing = [mem("e1", "一律用 SwiftUI 写 macOS 界面", sourceFile: sharedSrc)]
         let (c, e) = try await d.link(candidates: cand, against: existing)
-        XCTAssertEqual(c.first?.contradicts, ["e1"])   // 双向建链
+        XCTAssertEqual(c.first?.contradicts, ["e1"], "c1 跟 e1 矛盾 → 双向建链")
         XCTAssertEqual(e.first?.contradicts, ["c1"])
     }
 
     func testNoFalseContradiction() async throws {
-        let d = ContradictionDetector(llm: ConflictMockLLM(conflictWhenContains: "ZZZ"))
+        var d = ContradictionDetector(llm: ConflictMockLLM(conflictWhenContains: "ZZZ"))
         let cand = [mem("c1", "用 SwiftUI")]
         let existing = [mem("e1", "测试用 XCTest")]
         let (c, e) = try await d.link(candidates: cand, against: existing)
@@ -198,7 +201,7 @@ final class ContradictionDetectorTests: XCTestCase {
 
     func testOnlyComparesAgainstDurable() async throws {
         // existing 是 candidate 而非 durable → 即便内容会触发 CONFLICT 也跳过
-        let d = ContradictionDetector(llm: ConflictMockLLM(conflictWhenContains: "AppKit"))
+        var d = ContradictionDetector(llm: ConflictMockLLM(conflictWhenContains: "AppKit"))
         let cand = [mem("c1", "应该用 AppKit")]
         let existing = [mem("e1", "一律用 SwiftUI", status: .candidate)]
         let (c, _) = try await d.link(candidates: cand, against: existing)

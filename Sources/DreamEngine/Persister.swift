@@ -34,14 +34,18 @@ public struct Persister {
         public var now: Date
         /// P8: 脱敏命中统计（每类多少处）。空 = 未启用或没命中。
         public var redactionCounts: [String: Int]
+        /// P0-1: 矛盾检测预筛统计 (nil = 这次没新候选, 没跑 link)
+        public var prescreenStats: DreamCycle.PrescreenStats?
 
         public init(ledger: Ledger, decayResults: [DecayResult] = [],
                     newlyAccepted: [Memory] = [], gatheredFiles: [String] = [],
                     redactionCounts: [String: Int] = [:],
+                    prescreenStats: DreamCycle.PrescreenStats? = nil,
                     now: Date = Date()) {
             self.ledger = ledger; self.decayResults = decayResults
             self.newlyAccepted = newlyAccepted; self.gatheredFiles = gatheredFiles
             self.redactionCounts = redactionCounts
+            self.prescreenStats = prescreenStats
             self.now = now
         }
     }
@@ -387,6 +391,16 @@ public struct Persister {
             }
         } else {
             out += "\n\n## Redaction\n本轮无脱敏命中（redactBeforeConsolidate=false 或 raw 无敏感字段）\n"
+        }
+        // P0-1: 矛盾检测预筛统计
+        if let ps = input.prescreenStats {
+            out += "\n\n## Prescreen（矛盾检测预筛）\n"
+            out += "本轮 \(ps.candidatesCount) 个新候选 × \(ps.existingCount) 个现有 durable\n"
+            out += "- 预筛留下: \(ps.keptByScreener) 对（共享实体 token / Adamic-Adar>0）\n"
+            out += "- 实际调 LLM: \(ps.llmCalls) 次（上限 \(ps.maxPairsPerNight)）\n"
+            if ps.truncated > 0 {
+                out += "- ⚠️ 截断: \(ps.truncated) 对**未比对**，明晚继续\n"
+            }
         }
         return out + "\n"
     }
