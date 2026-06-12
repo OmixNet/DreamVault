@@ -80,6 +80,8 @@ public struct DreamCycle {
         public let redactionCounts: [String: Int]
         /// P0-1: 矛盾检测预筛统计 + 实际 LLM 调用次数 (dream-report "## Prescreen" 段用)
         public let prescreenStats: PrescreenStats?
+        /// P0-3: 假 excerpt 闸门拒收数 (deterministic verification 拒掉的 fabricated draft)
+        public let rejectedFabricatedCount: Int
         public var nothingToDo: Bool { gatheredCount == 0 && acceptedCount == 0 }
     }
 
@@ -166,20 +168,29 @@ public struct DreamCycle {
         var mergedLedger = Persister.loadLedger(vaultRoot: vaultRoot)
         // P0-1: 矛盾检测预筛统计 (dream-report ## Prescreen 段)
         var prescreenStats: PrescreenStats? = nil
+        // P0-3: 假 excerpt 闸门拒收数 (dream-report ## Fabrication 段)
+        var rejectedFabricatedCount: Int = 0
 
         if !gathered.candidates.isEmpty {
             // — 2. Consolidate：新候选 → 经四道闸的可信教训 —
             // 这里把 Gatherer 已脱敏的候选原样传给 Consolidator；Consolidator 内
             // 还会再脱敏一次（redactBeforeConsolidate 默认 true），是幂等的。
             onStage?("consolidate")
-            let consolidator = Consolidator(llm: llm, config: config.consolidation, redactor: redactor)
+            let consolidator = Consolidator(
+                llm: llm,
+                config: config.consolidation,
+                redactor: redactor,
+                sourceContents: gathered.sourceContents  // P0-3: 假 excerpt 闸门
+            )
             // 主入口：根据 config.consolidation.useThreeStepCoT 路由
             //   true  → consolidate3Step（生产 LLM 推荐，含 analyze → generate → verify）
             //   false → consolidate（2 步快速路径，mock / 极快模型）
             // 多候选并发上限由 config.consolidation.concurrency 控制。
             do {
-                newAccepted = try await consolidator.consolidateSmart(gathered.candidates)
-                onStage?("consolidate done: \(newAccepted.count) accepted")
+                let result = try await consolidator.consolidateSmart(gathered.candidates)
+                newAccepted = result.accepted
+                rejectedFabricatedCount = result.rejectedFabricated
+                onStage?("consolidate done: \(newAccepted.count) accepted (rejected fabricated: \(rejectedFabricatedCount))")
             } catch {
                 onStage?("consolidate failed: \(error.localizedDescription)")
                 // 失败：撤掉已 gather 的状态（不写 processed 即可，下次会重收）
@@ -268,6 +279,7 @@ public struct DreamCycle {
             gatheredFiles: gathered.gatheredFiles,
             redactionCounts: gathered.redactionCounts,  // P8: 让 dream-report 显示命中统计
             prescreenStats: prescreenStats,             // P0-1: 让 dream-report 显示预筛统计
+            rejectedFabricatedCount: rejectedFabricatedCount, // P0-3
             now: now
         )
 
@@ -300,7 +312,8 @@ public struct DreamCycle {
             memoryMdPath: outcome.memoryMdPath,
             committed: outcome.committed,
             redactionCounts: gathered.redactionCounts,
-            prescreenStats: prescreenStats
+            prescreenStats: prescreenStats,
+            rejectedFabricatedCount: rejectedFabricatedCount  // P0-3
         )
     }
 

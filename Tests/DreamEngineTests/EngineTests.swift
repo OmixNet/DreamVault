@@ -66,21 +66,21 @@ final class ConsolidatorTests: XCTestCase {
     func testGate1_DropsMemoryWithoutSource() async throws {
         let c = Consolidator(llm: MockLLM(verdict: "YES"))
         let noSrc = Memory(text: "无依据", sources: [])
-        let out = try await c.consolidate([noSrc])
+        var cnt = 0; let out = try await c.consolidate([noSrc], rejectedFabricated: &cnt)
         XCTAssertTrue(out.isEmpty)  // 无来源 → 丢弃
     }
 
     func testGate3_DropsHallucinationWhenVerifyFails() async throws {
         let c = Consolidator(llm: MockLLM(verdict: "NO"))
         let m = Memory(text: "幻觉结论", sources: [src("raw/a.md")])
-        let out = try await c.consolidate([m])
+        var cnt = 0; let out = try await c.consolidate([m], rejectedFabricated: &cnt)
         XCTAssertTrue(out.isEmpty)  // 回读校验 NO → 丢弃
     }
 
     func testGate2_SingleSourceStaysCandidate() async throws {
         let c = Consolidator(llm: MockLLM(verdict: "YES"))
         let m = Memory(text: "单源观察", sources: [src("raw/a.md")])
-        let out = try await c.consolidate([m])
+        var cnt = 0; let out = try await c.consolidate([m], rejectedFabricated: &cnt)
         XCTAssertEqual(out.first?.status, .candidate)  // 单源不进 MEMORY.md
     }
 
@@ -88,7 +88,7 @@ final class ConsolidatorTests: XCTestCase {
         let c = Consolidator(llm: MockLLM(verdict: "YES"))
         let m = Memory(text: "多源规律",
                        sources: [src("raw/a.md"), src("raw/b.md")])
-        let out = try await c.consolidate([m])
+        var cnt = 0; let out = try await c.consolidate([m], rejectedFabricated: &cnt)
         XCTAssertEqual(out.first?.status, .durable)  // 两独立源 → 升 durable
     }
 }

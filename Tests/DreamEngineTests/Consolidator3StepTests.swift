@@ -150,7 +150,7 @@ final class Consolidator3StepTests: XCTestCase {
             """
         )
         let c = Consolidator(llm: llm)
-        let out = try await c.consolidate3Step([makeCandidate()])
+        var cnt = 0; let out = try await c.consolidate3Step([makeCandidate()], rejectedFabricated: &cnt)
         XCTAssertEqual(out.count, 1)
         XCTAssertEqual(out[0].text, "倾向用 SwiftUI")
         XCTAssertEqual(out[0].decayClass, .slow, "应解析 decayClass=slow")
@@ -167,7 +167,7 @@ final class Consolidator3StepTests: XCTestCase {
             verifyAnswer: "NO"   // verify 不通过
         )
         let c = Consolidator(llm: llm)
-        let out = try await c.consolidate3Step([makeCandidate()])
+        var cnt = 0; let out = try await c.consolidate3Step([makeCandidate()], rejectedFabricated: &cnt)
         XCTAssertTrue(out.isEmpty, "verify NO 应丢弃")
     }
 
@@ -181,7 +181,7 @@ final class Consolidator3StepTests: XCTestCase {
             """
         )
         let c = Consolidator(llm: llm)
-        let out = try await c.consolidate3Step([makeCandidate(file: "raw/a.md")])
+        var cnt = 0; let out = try await c.consolidate3Step([makeCandidate(file: "raw/a.md")], rejectedFabricated: &cnt)
         XCTAssertTrue(out.isEmpty, "编造的 source 应被来源真实性闸拦截")
     }
 
@@ -195,7 +195,7 @@ final class Consolidator3StepTests: XCTestCase {
             """
         )
         let c = Consolidator(llm: llm)
-        let out = try await c.consolidate3Step([makeCandidate()])
+        var cnt = 0; let out = try await c.consolidate3Step([makeCandidate()], rejectedFabricated: &cnt)
         XCTAssertTrue(out.isEmpty)
     }
 
@@ -208,7 +208,7 @@ final class Consolidator3StepTests: XCTestCase {
             """
         )
         let c = Consolidator(llm: llm)
-        let out = try await c.consolidate3Step([makeCandidate()])
+        var cnt = 0; let out = try await c.consolidate3Step([makeCandidate()], rejectedFabricated: &cnt)
         XCTAssertEqual(out.count, 1)
         XCTAssertEqual(out[0].decayClass, .normal)
     }
@@ -227,7 +227,7 @@ final class Consolidator3StepTests: XCTestCase {
             """
         )
         let c = Consolidator(llm: llm)
-        let out = try await c.consolidate3Step([makeCandidate()])
+        var cnt = 0; let out = try await c.consolidate3Step([makeCandidate()], rejectedFabricated: &cnt)
         XCTAssertEqual(out.count, 2)
         XCTAssertEqual(out.map { $0.decayClass }, [.slow, .fast])
     }
@@ -241,7 +241,7 @@ final class Consolidator3StepTests: XCTestCase {
             draftsJSON: "[]"
         )
         let c = Consolidator(llm: llm)
-        let out = try await c.consolidate3Step([makeCandidate()], consolidate2StepFallback: true)
+        var cnt = 0; let out = try await c.consolidate3Step([makeCandidate()], consolidate2StepFallback: true, rejectedFabricated: &cnt)
         // 2 段逻辑：verify(staged LLM 的 system "事实校验器" → verifyAnswer "YES") → 通过
         // 但 candidate.status = classify() 决定，distinctSourceCount=1 → candidate
         XCTAssertEqual(out.count, 1)
@@ -253,7 +253,7 @@ final class Consolidator3StepTests: XCTestCase {
         // concurrency=1 走 serial 模式，错误会自然抛出（fallback=false 时 hard-fail 语义）
         let c = Consolidator(llm: llm, config: ConsolidationConfig(concurrency: 1))
         do {
-            _ = try await c.consolidate3Step([makeCandidate()], consolidate2StepFallback: false)
+            var cnt = 0; _ = try await c.consolidate3Step([makeCandidate()], consolidate2StepFallback: false, rejectedFabricated: &cnt)
             XCTFail("应抛错而不是悄悄通过")
         } catch {
             // 期望
@@ -270,7 +270,7 @@ final class Consolidator3StepTests: XCTestCase {
         let candidates = (1...10).map { i in
             makeCandidate(text: "候选 #\(i)", file: "raw/\(i).md")
         }
-        let out = try await c.consolidate3Step(candidates)
+        var cnt = 0; let out = try await c.consolidate3Step(candidates, rejectedFabricated: &cnt)
         // 至少应该有 10 次 LLM 调用（每个 candidate 至少 analyze 1 次）
         XCTAssertGreaterThanOrEqual(llm.callCount, 10, "10 个候选应至少调 LLM 10 次")
         XCTAssertGreaterThanOrEqual(out.count, 0)  // draftsJSON=[] 可能没有 accepted，但流程跑完
@@ -284,7 +284,7 @@ final class Consolidator3StepTests: XCTestCase {
         let c = Consolidator(llm: llm,
                              config: ConsolidationConfig(concurrency: 1))
         let candidates = (1...5).map { i in makeCandidate(text: "x\(i)", file: "raw/\(i).md") }
-        _ = try await c.consolidate3Step(candidates)
+        var cnt = 0; _ = try await c.consolidate3Step(candidates, rejectedFabricated: &cnt)
         XCTAssertGreaterThanOrEqual(llm.callCount, 5)
     }
 
@@ -298,7 +298,7 @@ final class Consolidator3StepTests: XCTestCase {
         // 想测到 verify 调用就得给一个非空 draftsJSON。
         let c3 = Consolidator(llm: llm,
                               config: ConsolidationConfig(useThreeStepCoT: true, concurrency: 1))
-        _ = try await c3.consolidateSmart([makeCandidate()])
+        var cnt3 = 0; let r3 = try await c3.consolidateSmart([makeCandidate()]); _ = r3.accepted; _ = r3.rejectedFabricated
         let threeStepCount = llm.callCount
         XCTAssertGreaterThanOrEqual(threeStepCount, 2, "3 段 CoT 至少 analyze + generate = 2 次 LLM 调用")
 
@@ -306,7 +306,7 @@ final class Consolidator3StepTests: XCTestCase {
         let llm2 = StagedLLM(analysisJSON: "", draftsJSON: "", verifyAnswer: "YES")
         let c2 = Consolidator(llm: llm2,
                               config: ConsolidationConfig(useThreeStepCoT: false, concurrency: 1))
-        _ = try await c2.consolidateSmart([makeCandidate()])
+        var cnt2 = 0; let r2 = try await c2.consolidateSmart([makeCandidate()]); _ = r2.accepted; _ = r2.rejectedFabricated
         XCTAssertEqual(llm2.callCount, 1, "2 步快速路径只 verify 1 次")
     }
 
@@ -343,7 +343,7 @@ final class Consolidator3StepTests: XCTestCase {
             sources: [SourceRef(file: "raw/a.md", line: 1, excerpt: "sk-live-abc123XYZ4567890abcd")]
         )
         // 走 3 段，redact 闸会先跑
-        _ = try await c.consolidate3Step([mem])
+        var cnt = 0; _ = try await c.consolidate3Step([mem], rejectedFabricated: &cnt)
         let analyzeUser = cap.capturedByStep["analyze"] ?? ""
         XCTAssertFalse(analyzeUser.contains("sk-live-abc123XYZ4567890abcd"),
                        "脱敏闸应已清掉明文 key，analyze 步 LLM 不应看到")

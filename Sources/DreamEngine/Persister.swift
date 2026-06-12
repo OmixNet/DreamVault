@@ -36,16 +36,20 @@ public struct Persister {
         public var redactionCounts: [String: Int]
         /// P0-1: 矛盾检测预筛统计 (nil = 这次没新候选, 没跑 link)
         public var prescreenStats: DreamCycle.PrescreenStats?
+        /// P0-3: 假 excerpt 闸门拒收数 (0 = 全通过)
+        public var rejectedFabricatedCount: Int
 
         public init(ledger: Ledger, decayResults: [DecayResult] = [],
                     newlyAccepted: [Memory] = [], gatheredFiles: [String] = [],
                     redactionCounts: [String: Int] = [:],
                     prescreenStats: DreamCycle.PrescreenStats? = nil,
+                    rejectedFabricatedCount: Int = 0,
                     now: Date = Date()) {
             self.ledger = ledger; self.decayResults = decayResults
             self.newlyAccepted = newlyAccepted; self.gatheredFiles = gatheredFiles
             self.redactionCounts = redactionCounts
             self.prescreenStats = prescreenStats
+            self.rejectedFabricatedCount = rejectedFabricatedCount
             self.now = now
         }
     }
@@ -401,6 +405,12 @@ public struct Persister {
             if ps.truncated > 0 {
                 out += "- ⚠️ 截断: \(ps.truncated) 对**未比对**，明晚继续\n"
             }
+        }
+        // P0-3: 假 excerpt 闸门拒收统计 (deterministic, 0 LLM)
+        if input.rejectedFabricatedCount > 0 {
+            out += "\n\n## Fabrication（假 excerpt 拒收）\n"
+            out += "本轮拒收 **\(input.rejectedFabricatedCount)** 条 fabricated draft（其 sourceExcerpt 归一化后不在源文件真实内容里）\n"
+            out += "这些 draft 引用了真文件 + 假片段, verify 自我校验骗自己. P0-3 闸门在 3 段 CoT 的 generate 步骤之后拦截, 永不写进 ledger.\n"
         }
         return out + "\n"
     }
