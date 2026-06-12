@@ -2,7 +2,7 @@
 
 macOS 原生 Markdown 知识库 + dream 夜间记忆整理。本仓库包含 **内核**（DreamEngine 库 + 端到端测试 + 文档）、**dream CLI**、**dream SwiftUI GUI** 和 **launchd 夜间调度**。
 
-**当前版本：v0.3.0**（234 tests, 0 failures，merge commit `7713250`）。
+**当前版本：v0.4.0**（254 tests, 0 failures，merge commit `9f051bf`）。
 
 ## 跑起来
 
@@ -212,6 +212,43 @@ bash scripts/uninstall.sh --purge   # 全清
 
 - GitHub: <https://github.com/OmixNet/DreamVault>
 - 协议：MIT（待定，可改）
+
+## v0.4.0 — Ship-readiness（Welcome + Backup + Crash-safe writes）
+
+3 件最影响"上线感"的事：
+
+**P7-T1: First-run welcome sheet**（首次启动引导）
+- `FirstRunTracker`（DreamEngine lib）管理 `didShowWelcome` UserDefaults flag
+- `FirstRunWelcomeView`（3 步引导）：
+  - Step 1: 选 vault（NSOpenPanel）或 "Create new at ~/.dreamvault"（自动 git init + 5 个 wiki 子目录 + .dream）
+  - Step 2: 选 LLM provider + baseURL + model + Test Connection 按钮
+  - Step 3: Ready 摘要 + Done 写 UserDefaults
+- 触发：MainView.onAppear 0.5s 后检 `FirstRunTracker.shouldShow()`
+- 用户手动换 vault 后 `FirstRunTracker.reset()`（让他重选 LLM 适配新 vault）
+
+**P7-T2: Vault backup / restore**（"可恢复错误"维度）
+- `VaultBackup`（DreamEngine lib）用 `/usr/bin/zip` + `/usr/bin/unzip` 包装
+  - `backup`：zip -r -q → `~/Desktop/DreamVault-vault-<ts>.zip`，排除 `.build`/`.swiftpm`/`.opencode`/`node_modules`/`.DS_Store`
+  - `restore`：解压前检查目标 vault 非空（不含 .DS_Store）→ 拒绝覆盖
+- `AppActions.backupVault` / `restoreVault` NSAlert 二次确认
+- File 菜单加 "Backup Vault…Cmd-Shift-B" + "Restore Vault…"
+
+**P7-T3: Crash-safe autosave**（修真实 race）
+- 新 `AtomicFile`（DreamEngine lib）
+  - 写 `<target>.tmp.<uuid>` → `fsync` → atomic rename
+  - `replaceItemAt` 失败时退到 `moveItemAt`（旧文件不存在时 replace 会 fail）
+  - catch error 时清理 tmp
+- `Persister.saveLedger` 改走 AtomicFile（**之前 `.write(to:url)` 无 atomically，崩了写一半会损坏 ledger.json**——真实 race）
+- `EditorState.flushPending` 改走 AtomicFile（autosave 写一半 = 数据丢失）
+
+**10 个新测试**（ShipReadinessTests）：
+- FirstRunTracker 3 cases（shouldShow / markShown / reset）
+- VaultBackup 4 cases（createsZip / rejectsNonExistent / rejectsNonEmpty / rejectsNonZipFile）
+- AtomicFile 3 cases（writes/reads / overwrites / cleansUpOnFailure）
+
+**意外 BUG 修**：testVaultBackup_restore_rejectsNonEmptyDir 假设 `/usr/bin/zip` 对空目录 "zip ." 能成功，实际报 "Nothing to do"（不加 placeholder 空 zip 无意义）→ 修测试加 `.placeholder`。
+
+测试: 244 → 254 (+10)
 
 ## v0.3.0 — Production readiness（Settings 真正接入 + Keychain + Budget）
 
