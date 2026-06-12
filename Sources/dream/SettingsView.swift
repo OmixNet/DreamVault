@@ -501,7 +501,7 @@ public struct SettingsView: View {
                             .padding(.top, 2)
                         }
                     }
-                    .padding(8)
+                    .padding(Spacing.sm)
                     .background(Color.yellow.opacity(0.12))
                     .cornerRadius(6)
                 } header: {
