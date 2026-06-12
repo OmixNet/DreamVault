@@ -87,29 +87,68 @@ public struct GitRunner {
     /// 理由：`add -A` 会把用户自己的工作区改动（甚至未追踪的 raw 文件）
     /// 一起吞进 dream commit，破坏"git 是事务边界"的纯净性。
     ///
-    /// 实现：临时 stage 所有改动（容错：路径可能不存在），然后 unstage 非引擎路径，
-    /// 最后只 commit 剩下的（应该是 0 或引擎路径）。
-    /// 调用方应先用 hasUserDirtyChanges() 确认工作区干净。
+    /// 实现：P3-T3 fix —— 不再用 `add -A`。改为：
+    /// 1. `git status --porcelain` 拿到所有 dirty 路径
+    /// 2. 用白名单（isEnginePath）过滤出引擎路径
+    /// 3. 对引擎路径调 `git add`（显式，不含 raw/，避免大文件被 hash）
+    /// 4. `git diff --cached --name-only` 校验 stage 集合非空再 commit
     @discardableResult
     public func commitAll(message: String) throws -> Bool {
-        // 1. 临时 stage 所有（用 -A 容错，未追踪文件也不报错）
-        try run(["add", "-A"])
-        // 2. 列出已 staged 的路径，把非引擎的 unstage 掉
-        let stagedOut = try run(["diff", "--cached", "--name-only"])
-        let stagedPaths = stagedOut.components(separatedBy: "\n").filter { !$0.isEmpty }
-        let toUnstage = stagedPaths.filter { !Self.isEnginePath($0) }
-        if !toUnstage.isEmpty {
-            // 用 `git reset HEAD --` 而不是 `git restore --staged`，因为空仓库（无 HEAD）
-            // 时 restore 会 fatal；reset 在空仓库上也工作。
-            try run(["reset", "HEAD", "--"] + toUnstage)
+        // 1. 拿所有 dirty 路径（untracked + modified + staged）
+        let statusOut = (try? run(["status", "--porcelain"])) ?? ""
+        let allDirty = Self.parseStatusPaths(statusOut)
+
+        // 2. 过滤出引擎路径（白名单）
+        let enginePaths = allDirty.filter { Self.isEnginePath($0) }
+        guard !enginePaths.isEmpty else {
+            return false  // 没引擎写的变更，nothing to commit
         }
-        // 3. 看最终 staged
-        let final = try run(["diff", "--cached", "--name-only"])
+
+        // 3. 显式 add 引擎路径
+        try run(["add", "--"] + enginePaths)
+
+        // 4. 校验：必须至少 1 个文件真在 index 里（容错：路径可能已被删）
+        let final = (try? run(["diff", "--cached", "--name-only"])) ?? ""
         guard !final.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return false
         }
         try run(Self.identity + ["commit", "-m", message])
         return true
+    }
+
+    /// 把 `git status --porcelain` 输出解析为路径列表（去重 + 跳过空行 + 跳过子模块状态）
+    /// v1 porcelain 状态字段固定 2 字符 + 空格 + 路径。
+    private static func parseStatusPaths(_ porcelain: String) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for line in porcelain.components(separatedBy: "\n") {
+            guard line.count >= 4 else { continue }
+            // 跳过前导空格（" M file" 第一字符是空格）
+            var i = 0
+            // 状态字段（最多 2 个非空格字符）
+            var statusLen = 0
+            while i < line.count, line[line.index(line.startIndex, offsetBy: i)] != " ", statusLen < 2 {
+                i += 1
+                statusLen += 1
+            }
+            // 跳过分隔空格
+            while i < line.count, line[line.index(line.startIndex, offsetBy: i)] == " " {
+                i += 1
+            }
+            guard i < line.count else { continue }
+            let path = String(line[line.index(line.startIndex, offsetBy: i)...])
+            // rename 形式 "old -> new" 取 RHS
+            let cleaned: String
+            if let arrow = path.range(of: " -> ") {
+                cleaned = String(path[arrow.upperBound...])
+            } else {
+                cleaned = path
+            }
+            if seen.insert(cleaned).inserted {
+                result.append(cleaned)
+            }
+        }
+        return result
     }
 
     /// 检查 vault 工作区是否有任何未提交改动（除引擎路径外）。

@@ -8,6 +8,7 @@ struct MainView: View {
     @EnvironmentObject var model: AppModel
     @StateObject private var editorState = EditorState()
     @StateObject private var gitWatcher = GitStatusWatcher()
+    @StateObject private var searcher = VaultSearcher()
 
     /// P3-C1: 把 model 和 editorState 写进 FocusedValues，菜单 command 才能读
     var body: some View {
@@ -15,6 +16,8 @@ struct MainView: View {
             .focusedSceneValue(\.appModel, model)
             .focusedSceneValue(\.editorState, editorState)
     }
+
+    @State private var showSearch = false
 
     @ViewBuilder
     private var content: some View {
@@ -43,9 +46,25 @@ struct MainView: View {
                     .lineLimit(1)
                     .truncationMode(.head)
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showSearch.toggle()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .help("Search vault (Cmd-Shift-F)")
+            }
+        }
+        .sheet(isPresented: $showSearch) {
+            SearchSheet(searcher: searcher, model: model) {
+                showSearch = false
+            }
         }
         .onAppear {
             gitWatcher.refresh(vaultRoot: model.vaultRoot)
+            NotificationCenter.default.addObserver(
+                forName: .showVaultSearch, object: nil, queue: .main
+            ) { _ in showSearch = true }
         }
         .onChange(of: model.selectedFile) { newFile in
             gitWatcher.refresh(vaultRoot: model.vaultRoot)
@@ -244,6 +263,14 @@ struct DreamPanel: View {
             row("ledger 总数", value: "\(model.status.totalMemories)",
                 detail: "durable \(model.status.durableCount) / candidate \(model.status.candidateCount) / archived \(model.status.archivedCount)")
             row("待裁决", value: "\(model.status.withContradictsCount)")
+
+            // P3-T1: 行内矛盾裁决（计数 > 0 才显示）
+            if model.status.withContradictsCount > 0 {
+                Divider().padding(.vertical, 4)
+                Text("Conflicts (\(model.status.withContradictsCount))")
+                    .font(.subheadline).bold()
+                ConflictResolutionView(ledger: model.ledger)
+            }
 
             // P3-C3: 5 步骤 stage 进度
             if model.isRunning || model.lastOutcome != nil || model.lastError != nil {

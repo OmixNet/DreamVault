@@ -17,26 +17,28 @@ public struct ConsolidationConfig: Sendable {
     /// 走三段式 CoT（analyze → generate → verify），生产 LLM 推荐 true；
     /// false 则走最便宜的 2 步快速路径（mock / 极快模型）。
     /// 三段任一阶段失败时自动回退到 2 步（fallbackOnThreeStepFailure）。
-    public var useThreeStepCoT: Bool = true
+    public var useThreeStepCoT: Bool = false  // P3-T2: 默认关，Settings 显式开启
     /// 三段失败时是否回退到 2 步。false 则三段任一阶段崩了直接抛错（调试用）。
     public var fallbackOnThreeStepFailure: Bool = true
-    /// 跨候选并发上限。LLM 是 IO-bound（本地 Ollama 也常并发 4-8 上限）。
-    /// 0 或 1 = 串行；建议 4-8。
-    public var concurrency: Int = 4
+    /// 跨候选并发上限。LLM 是 IO-bound（本地 Ollama 4+ 容易 OOM/超时）。
+    /// P3-T2: 默认 2（Ollama 7B 量化安全线），上限 4（防止用户填 100）。
+    /// 0 或 1 = 串行。Settings 让用户调。
+    public var concurrency: Int = 2
 
     public init() {}
     public init(
         durableMinSources: Int = 2,
         redactBeforeConsolidate: Bool = true,
-        useThreeStepCoT: Bool = true,
+        useThreeStepCoT: Bool = false,
         fallbackOnThreeStepFailure: Bool = true,
-        concurrency: Int = 4
+        concurrency: Int = 2
     ) {
         self.durableMinSources = durableMinSources
         self.redactBeforeConsolidate = redactBeforeConsolidate
         self.useThreeStepCoT = useThreeStepCoT
         self.fallbackOnThreeStepFailure = fallbackOnThreeStepFailure
-        self.concurrency = concurrency
+        // P3-T2: init 阶段就 cap，避免下游调用忘了再 max/min
+        self.concurrency = max(1, min(4, concurrency))
     }
 }
 
@@ -46,9 +48,48 @@ public struct Consolidator {
     public let redactor: Redactor
 
     public init(llm: LLMProvider,
-                config: ConsolidationConfig = ConsolidationConfig(),
+                config: ConsolidationConfig = .init(),
                 redactor: Redactor = Redactor()) {
-        self.llm = llm; self.config = config; self.redactor = redactor
+        self.llm = llm
+        self.config = config
+        self.redactor = redactor
+    }
+
+    // MARK: - P3-T2: LLM 重试 + 指数退避
+    /// 把 llm.complete 包成最多 3 次重试（1s → 2s → 4s + 0-500ms jitter）。
+    /// 失败原因通常是网络波动 / 本地模型偶发吐乱码。重试都写到 stderr，
+    /// dream-report 不记重试细节（用户只看 "FAIL: ..." 终态）。
+    func callLLMWithRetry(system: String, user: String,
+                          maxAttempts: Int = 3) async throws -> String {
+        var lastError: Error?
+        for attempt in 1...maxAttempts {
+            do {
+                let out = try await llm.complete(system: system, user: user)
+                if attempt > 1 {
+                    FileHandle.standardError.write(Data(
+                        "[Consolidator] LLM 重试成功 (attempt \(attempt)/\(maxAttempts))\n".utf8))
+                }
+                return out
+            } catch {
+                lastError = error
+                if attempt < maxAttempts {
+                    let baseDelay = pow(2.0, Double(attempt - 1))  // 1s, 2s, 4s
+                    let jitter = Double.random(in: 0...0.5)
+                    let delay = baseDelay + jitter
+                    FileHandle.standardError.write(Data(
+                        "[Consolidator] LLM attempt \(attempt)/\(maxAttempts) 失败: \(error.localizedDescription)，\(String(format: "%.1f", delay))s 后重试\n".utf8))
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+            }
+        }
+        throw lastError ?? LLMRetryError.exhausted
+    }
+
+    public enum LLMRetryError: Error, LocalizedError {
+        case exhausted
+        public var errorDescription: String? {
+            "LLM call exhausted all retry attempts"
+        }
     }
 
     /// 闸门 1：丢弃无来源引用的教训
@@ -75,7 +116,7 @@ public struct Consolidator {
 
         这些证据是否支撑该结论？
         """
-        let answer = try await llm.complete(system: system, user: user)
+        let answer = try await callLLMWithRetry(system: system, user: user)
         return answer.uppercased().contains("YES")
     }
 
@@ -224,7 +265,7 @@ public struct Consolidator {
 
         请按 JSON 格式输出你的分析。
         """
-        let raw = try await llm.complete(system: system, user: user)
+        let raw = try await callLLMWithRetry(system: system, user: user)
         return try Self.parseAnalysis(raw)
     }
 
@@ -261,7 +302,7 @@ public struct Consolidator {
 
         请输出 JSON 数组。
         """
-        let raw = try await llm.complete(system: system, user: user)
+        let raw = try await callLLMWithRetry(system: system, user: user)
         return try Self.parseDrafts(raw)
     }
 
@@ -274,7 +315,7 @@ public struct Consolidator {
         consolidate2StepFallback: Bool? = nil
     ) async throws -> [Memory] {
         let fallback = consolidate2StepFallback ?? config.fallbackOnThreeStepFailure
-        let limit = max(1, config.concurrency)
+        let limit = max(1, min(4, config.concurrency))  // P3-T2: cap 4 防 OOM
 
         // 并发上限 1 = 完全串行（等价旧行为），跳过 TaskGroup
         if limit <= 1 {

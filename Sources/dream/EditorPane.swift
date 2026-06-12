@@ -187,8 +187,14 @@ public struct EditorPane: View {
         })
     }
 
-    /// 用 T0 的 MarkdownRenderer 渲染：把 NSAttributedString 桥到 SwiftUI AttributedString。
+    /// 用 T0 + T2 的 MarkdownRenderer 渲染：把 NSAttributedString 桥到 SwiftUI AttributedString。
     /// NSAttributedString 上面的 .link / .font / .foregroundColor 都会带过去（macOS 12+）。
+    ///
+    /// P3-T6 决策：选自研 renderer 而非 SwiftUI `Text(markdown:)`。
+    ///   - SwiftUI Text(markdown:) 13 不支持表格（14+ 才完整支持）
+    ///   - 自研 renderer 在 T2 已经支持表格 / 图片 / wikilink
+    ///   - 链接跳转走 NSAttributedString.link（cancellable 不依赖 AttributedString.link 渲染）
+    ///   - macOS 13 + 自研渲染是最佳选择
     private func renderMarkdown(_ md: String) -> AttributedString {
         let ns = markdownRenderer.renderer.render(md)
         if #available(macOS 12, *) {
