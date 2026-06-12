@@ -66,6 +66,10 @@ public struct Memory: Codable, Identifiable, Equatable {
     /// 相关/矛盾的双向链接存储（id 列表）。避免扫整盘 graph 算 related 时再去 lookup。
     /// 与 `contradicts` 不同：relatedTo 是"general"相关（含矛盾），contradicts 专指冲突。
     public var relatedTo: [String]
+    /// P9c-P0-2: 每个 source (raw/...) 最近一次 reinforce 的日期（per-day debounce）。
+    /// key = ReinforceSource.rawValue, value = 上次 reinforce 的 Date（实际只用到日期部分）。
+    /// 旧 ledger 没有此字段 → 默认空（首次 reinforce 会写回）。
+    public var lastReinforceBySource: [String: Date]
 
     public init(id: String = UUID().uuidString,
                 text: String,
@@ -78,7 +82,8 @@ public struct Memory: Codable, Identifiable, Equatable {
                 contradicts: [String] = [],
                 decayClass: DecayClass = .normal,
                 kind: MemoryKind = MemoryKind.defaultKind,
-                relatedTo: [String] = []) {
+                relatedTo: [String] = [],
+                lastReinforceBySource: [String: Date] = [:]) {
         self.id = id; self.text = text; self.sources = sources
         self.status = status; self.createdAt = createdAt
         self.lastAccess = lastAccess; self.reinforceCount = reinforceCount
@@ -86,6 +91,7 @@ public struct Memory: Codable, Identifiable, Equatable {
         self.decayClass = decayClass
         self.kind = kind
         self.relatedTo = relatedTo
+        self.lastReinforceBySource = lastReinforceBySource
     }
 
     /// 自定义解码：旧 ledger.json 没有 kind/relatedTo/decayClass 字段时
@@ -105,6 +111,9 @@ public struct Memory: Codable, Identifiable, Equatable {
         // kind / relatedTo：旧 ledger 没有时按架构默认值回退
         kind = try c.decodeIfPresent(MemoryKind.self, forKey: .kind) ?? MemoryKind.defaultKind
         relatedTo = try c.decodeIfPresent([String].self, forKey: .relatedTo) ?? []
+        // P9c-P0-2: lastReinforceBySource 旧 ledger 没有时给空 dict（首次 reinforce 会写回）
+        lastReinforceBySource = try c.decodeIfPresent([String: Date].self,
+                                                     forKey: .lastReinforceBySource) ?? [:]
     }
 
     /// 独立来源数（按文件去重）——决定能否从 candidate 升为 durable

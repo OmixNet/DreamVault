@@ -203,6 +203,25 @@ public struct DreamCycle {
                     mergedLedger.memories.append(m)
                 }
             }
+
+            // P9c-P0-2: 触发点 3 — dream 时新教训引用了同一 raw 源，
+            // 对现有 durable/archived 记忆强化 .dreamReference（per-day debounce）
+            let referencedFiles = Set(newAccepted.flatMap { $0.sources.map { $0.file } })
+            if !referencedFiles.isEmpty {
+                let hit = Reinforcer.reinforceBySourceFiles(
+                    referencedFiles, vaultRoot: vaultRoot, now: now)
+                if !hit.isEmpty {
+                    onStage?("reinforce: \(hit.count) existing memories via dreamReference")
+                    // 把强化过的记忆再写回 mergedLedger（reinforceBySourceFiles 已落盘，
+                    // 这里同步内存避免后续 Persister.persist 用旧值覆盖新值）
+                    let ledger = Persister.loadLedger(vaultRoot: vaultRoot)
+                    for (i, m) in mergedLedger.memories.enumerated() {
+                        if let fresh = ledger.memories.first(where: { $0.id == m.id }) {
+                            mergedLedger.memories[i] = fresh
+                        }
+                    }
+                }
+            }
         }
 
         // — 3. Decay：扫所有记忆算 salience 决定动作 —

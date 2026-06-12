@@ -609,6 +609,9 @@ public final class AppModel: ObservableObject {
     @Published var textEditorDirty: Bool = false
     // P8: 预算快照（Dream tab 顶部 + Budget tab 详细表都读这个）
     @Published var budgetSnapshot: BudgetSnapshot? = nil
+    /// P9c-P0-2: Reinforcer 实例（被 EditorPane / SearchSheet / Consolidator 调用）。
+    /// switchVault 时重建。lazy 因为 init 阶段 vaultRoot 已被设好。
+    private(set) var reinforcer: Reinforcer
     /// BudgetSnapshot 是从 BudgetManager 拉出来的不可变快照（避免 @MainActor 跨 context 泄漏）
     struct BudgetSnapshot: Equatable {
         var todayCount: Int
@@ -624,6 +627,7 @@ public final class AppModel: ObservableObject {
     init(vault: URL? = nil) {
         let defaultPath = vault ?? DreamEntry.resolveInitialVault()
         self.vaultRoot = defaultPath
+        self.reinforcer = Reinforcer(vaultRoot: defaultPath)
         refreshStatus()
     }
 
@@ -636,6 +640,8 @@ public final class AppModel: ObservableObject {
         self.textEditorDirty = false
         self.lastOutcome = nil
         self.lastError = nil
+        // P9c-P0-2: 切 vault → 重建 reinforcer（旧 ledger 路径已变）
+        self.reinforcer = Reinforcer(vaultRoot: url)
         refreshStatus()
     }
 
