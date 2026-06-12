@@ -258,6 +258,10 @@ struct DreamVaultApp: App {
                 }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
                 Divider()
+                Button("Backup Vault…") { AppActions.backupVault(model: menuModel) }
+                    .keyboardShortcut("b", modifiers: [.command, .shift])
+                Button("Restore Vault…") { AppActions.restoreVault(model: menuModel) }
+                Divider()
                 Button("Export Diagnostics...") {
                     AppActions.exportDiagnostics(model: menuModel)
                 }
@@ -418,6 +422,83 @@ enum AppActions {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd-HHmmss"
         return f.string(from: Date())
+    }
+
+    // P7-T2: Vault backup / restore helpers
+    static func backupVault(model: AppModel) {
+        let alert = NSAlert()
+        alert.messageText = "Backup vault to zip"
+        alert.informativeText = "把 \(model.vaultRoot.lastPathComponent) 整个（含 .git + .dream + raw + wiki）打包到 ~/Desktop/"
+        alert.addButton(withTitle: "Backup")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            do {
+                let backup = VaultBackup()
+                let url = try backup.backup(vaultRoot: model.vaultRoot)
+                let done = NSAlert()
+                done.messageText = "Backup 完成"
+                done.informativeText = url.path
+                done.addButton(withTitle: "Reveal in Finder")
+                done.addButton(withTitle: "OK")
+                if done.runModal() == .alertFirstButtonReturn {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            } catch {
+                let e = NSAlert(error: error)
+                e.messageText = "Backup 失败"
+                e.runModal()
+            }
+        }
+    }
+
+    static func restoreVault(model: AppModel) {
+        // 选 zip
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.init(filenameExtension: "zip")].compactMap { $0 }
+        panel.prompt = "Choose backup zip"
+        if panel.runModal() != .OK || panel.url == nil { return }
+        let zipURL = panel.url!
+
+        // 选目标 vault
+        let dirPanel = NSOpenPanel()
+        dirPanel.canChooseFiles = false
+        dirPanel.canChooseDirectories = true
+        dirPanel.allowsMultipleSelection = false
+        dirPanel.prompt = "Choose target vault directory"
+        dirPanel.message = "目标 vault 必须是空目录（不含 .DS_Store）"
+        if dirPanel.runModal() != .OK || dirPanel.url == nil { return }
+        let dest = dirPanel.url!
+
+        // 二次确认
+        let confirm = NSAlert()
+        confirm.messageText = "Restore from backup?"
+        confirm.informativeText = """
+        From: \(zipURL.path)
+        To:   \(dest.path)
+
+        目标 vault 必须空。如果有内容会被拒绝（不会覆盖）。
+        """
+        confirm.addButton(withTitle: "Restore")
+        confirm.addButton(withTitle: "Cancel")
+        if confirm.runModal() != .alertFirstButtonReturn { return }
+
+        do {
+            let backup = VaultBackup()
+            try backup.restore(zipFile: zipURL, to: dest)
+            // 切 AppModel 到新 vault
+            model.switchVault(to: dest)
+            let done = NSAlert()
+            done.messageText = "Restore 完成"
+            done.informativeText = "已切到新 vault: \(dest.path)"
+            done.runModal()
+        } catch {
+            let e = NSAlert(error: error)
+            e.messageText = "Restore 失败"
+            e.runModal()
+        }
     }
 }
 
