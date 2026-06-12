@@ -59,6 +59,79 @@ public struct ConflictResolutionView: View {
             }
         }
         .onAppear { reloadAuditLog() }
+        .sheet(isPresented: $mergeSheet) {
+            if let target = mergeTarget,
+               let firstOpp = mem_firstOpponent(of: target) {
+                MergeSheetView(
+                    memoryA: target,
+                    memoryB: firstOpp,
+                    vaultRoot: model.vaultRoot,
+                    onCommit: { mergedText in
+                        mergeCommit(target: target, opponent: firstOpp, mergedText: mergedText)
+                        mergeSheet = false
+                        mergeTarget = nil
+                    },
+                    onCancel: {
+                        mergeSheet = false
+                        mergeTarget = nil
+                    }
+                )
+                .frame(minWidth: 700, minHeight: 500)
+            }
+        }
+    }
+
+    private func mem_firstOpponent(of mem: Memory) -> Memory? {
+        guard let firstID = mem.contradicts.first else { return nil }
+        return ledger.memories.first(where: { $0.id == firstID })
+    }
+
+    /// P8: 合并 target + 对手成一条新记忆，archive 旧两条，清 contradicts。
+    private func mergeCommit(target: Memory, opponent: Memory, mergedText: String) {
+        var newLedger = ledger
+        // Memory 用 sources: [SourceRef]；merge 后 sources = 双方 source 合并去重
+        let mergedSources = Array(Set(target.sources + opponent.sources))
+        let newMem = Memory(
+            id: "merged-\(UUID().uuidString.prefix(8))",
+            text: mergedText,
+            sources: mergedSources,
+            status: .candidate,  // merge 出来的让用户后面再 review / 转 durable
+            createdAt: Date(),
+            lastAccess: Date(),
+            reinforceCount: max(target.reinforceCount, opponent.reinforceCount),
+            inboundLinks: target.inboundLinks + opponent.inboundLinks,
+            contradicts: [],
+            decayClass: target.decayClass.rawValue >= opponent.decayClass.rawValue ? target.decayClass : opponent.decayClass,
+            kind: target.kind,
+            relatedTo: Array(Set(target.relatedTo + opponent.relatedTo))
+        )
+        newLedger.memories.append(newMem)
+        // archive 旧两条 + 清对手的 contradicts
+        for id in [target.id, opponent.id] {
+            if let i = newLedger.memories.firstIndex(where: { $0.id == id }) {
+                newLedger.memories[i].status = .archived
+                newLedger.memories[i].contradicts.removeAll()
+            }
+        }
+        // 清其他记忆的 contradicts 字段里所有对合并前后记忆的引用
+        for i in 0..<newLedger.memories.count {
+            newLedger.memories[i].contradicts.removeAll(where: {
+                $0 == target.id || $0 == opponent.id
+            })
+        }
+        do {
+            try Persister.saveLedger(newLedger, vaultRoot: model.vaultRoot)
+            let git = GitRunner(repoRoot: model.vaultRoot)
+            _ = try? git.run(["add", ".dream/ledger.json"])
+            let msg = "conflict-resolution: \(target.id) ⟷ \(opponent.id) → merged into \(newMem.id)"
+            _ = try? git.run(GitRunner.identity + ["commit", "-m", msg])
+            FileHandle.standardError.write(Data(
+                "[ConflictResolution] merge → \(newMem.id)\n".utf8))
+            model.refreshStatus()
+        } catch {
+            FileHandle.standardError.write(Data(
+                "[ConflictResolution] merge failed: \(error.localizedDescription)\n".utf8))
+        }
     }
 
     @ViewBuilder
@@ -175,12 +248,18 @@ public struct ConflictResolutionView: View {
             HStack(spacing: 6) {
                 Button("Keep A") { resolve(.keepA, mem: mem) }
                 Button("Keep B") { resolve(.keepB, mem: mem) }
+                // P8: 加 Merge 按钮 → 弹双列 diff 编辑器
+                Button("Merge…") { mergeTarget = mem; mergeSheet = true }
                 Button("Archive Both") { resolve(.archiveBoth, mem: mem) }
             }
             .controlSize(.small)
         }
         .padding(.bottom, 6)
     }
+
+    // P8: Merge sheet 状态
+    @State private var mergeSheet: Bool = false
+    @State private var mergeTarget: Memory? = nil
 
     private func toggle(_ id: String) {
         expandedID = (expandedID == id) ? nil : id
@@ -210,6 +289,9 @@ public struct ConflictResolutionView: View {
 
         switch choice {
         case .keepA:
+            // P8 修复：keepA 也得清反向——任何 memory 的 contradicts 含 target id 的
+            // 都需要把 target id 删掉（否则 C.contradicts=["A"] 这种反向仍让
+            // C 出现在"待裁决"列表）
             for opponentID in mem.contradicts {
                 if let i = newLedger.memories.firstIndex(where: { $0.id == opponentID }) {
                     newLedger.memories[i].status = .archived
@@ -217,15 +299,27 @@ public struct ConflictResolutionView: View {
                 }
             }
             newLedger.memories[memIdx].contradicts.removeAll()
+            for i in 0..<newLedger.memories.count {
+                newLedger.memories[i].contradicts.removeAll(where: { $0 == mem.id })
+            }
         case .keepB:
+            // P8 修复：之前只 archive target + 清 target.contradicts，
+            // 没有从对手的 contradicts 里删 target id → 列表里仍"待裁决"。
             newLedger.memories[memIdx].status = .archived
             newLedger.memories[memIdx].contradicts.removeAll()
+            for opponentID in mem.contradicts {
+                if let i = newLedger.memories.firstIndex(where: { $0.id == opponentID }) {
+                    newLedger.memories[i].contradicts.removeAll(where: { $0 == mem.id })
+                }
+            }
         case .archiveBoth:
+            // P8 修复：之前 archive opponents 但没清他们的 contradicts 字段
             newLedger.memories[memIdx].status = .archived
             newLedger.memories[memIdx].contradicts.removeAll()
             for opponentID in mem.contradicts {
                 if let i = newLedger.memories.firstIndex(where: { $0.id == opponentID }) {
                     newLedger.memories[i].status = .archived
+                    newLedger.memories[i].contradicts.removeAll(where: { $0 == mem.id })
                 }
             }
         }

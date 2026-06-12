@@ -86,9 +86,15 @@ final class DreamCLIParserTests: XCTestCase {
         XCTAssertTrue(p is OllamaProvider, "--llm ollama → OllamaProvider")
     }
 
-    func testLLMProvider_UnknownFallsBackToMock() {
+    func testLLMProvider_UnknownFallsBackToSettingsDefault() {
+        // P8 改动：llmProvider() 走 ResolvedConfig 5 层合并。
+        // 未知 --llm = CLI 覆盖 = nil，settings.llmChoice 默认是 .ollama → OllamaProvider。
+        // 之前的行为（"unknown → mock"）是因为旧实现直接 if-else unknown → mock。
+        // 新行为把 unknown 当成"用户没指定"，让下面层（settings）兜底。
+        // 这是 P4 引入 ResolvedConfig 的目标：单一解析路径。
         let opts = GlobalOptions(llm: "gpt-9000")
         let p = opts.llmProvider()
-        XCTAssertTrue(p is MockLLMProvider, "未知 --llm 应回退 Mock")
+        XCTAssertTrue(p is OllamaProvider,
+                      "未知 --llm 在 P8 走 ResolvedConfig 5 层合并，settings 默认 .ollama")
     }
 }

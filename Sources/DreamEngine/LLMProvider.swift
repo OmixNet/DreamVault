@@ -138,6 +138,79 @@ public struct OllamaProvider: LLMProvider, Sendable {
 // `DREAMVAULT_LLM` 取值：
 //   - "mock"     → MockLLMProvider（默认）
 //   - "ollama"   → OllamaProvider（可选 OLLAMA_BASE_URL / OLLAMA_MODEL 覆盖）
+// MARK: - BudgetedLLMProvider (P8)
+//
+// P8 修复：之前 BudgetManager 没人调，预算完全是"检查器"。
+// 这个 wrapper 透明地给任何 LLMProvider 加预算：
+//   - complete() 之前先 canProceed()，超额直接抛 BudgetExceededError
+//   - complete() 之后 recordCall(provider, model, inputTokens, outputTokens)
+//   - input/output tokens 用 character/4 粗略估算（Ollama 响应不带 token count）
+//
+// 用法：
+//   let base = OllamaProvider(...)
+//   let budgeted = BudgetedLLMProvider(wrapping: base,
+//                                       canProceed: { await MainActor.run { bm.canProceed() } },
+//                                       recordCall: { ... await MainActor.run { bm.recordCall(...) } })
+//   try await budgeted.complete(system: "...", user: "...")
+public final class BudgetedLLMProvider: LLMProvider, @unchecked Sendable {
+    public let inner: any LLMProvider
+    public let providerName: String
+    public let modelHint: String
+    public let charsPerToken: Int
+    /// 检查预算（异步，调用方决定是否 await MainActor.run）
+    /// 参数：estimatedOutputTokens 预估本次的 output token 数；budget manager 据此判断
+    /// 是不是会突破月度成本。如果传 0，monthly 成本检查不触发（只查 daily 次数）。
+    public let canProceedFn: @Sendable (_ estimatedOutputTokens: Int, _ modelHint: String) async -> Bool
+    /// 记录一次调用（异步，调用方决定是否 await MainActor.run）
+    public let recordCallFn: @Sendable (String, String, Int, Int) async -> Void
+
+    public init(wrapping inner: any LLMProvider,
+                providerName: String,
+                modelHint: String? = nil,
+                charsPerToken: Int = 4,
+                canProceedFn: @escaping @Sendable (_ estimatedOutputTokens: Int, _ modelHint: String) async -> Bool,
+                recordCallFn: @escaping @Sendable (String, String, Int, Int) async -> Void) {
+        self.inner = inner
+        self.providerName = providerName
+        if let m = modelHint {
+            self.modelHint = m
+        } else if let ollama = inner as? OllamaProvider {
+            self.modelHint = ollama.model
+        } else {
+            self.modelHint = "unknown"
+        }
+        self.charsPerToken = charsPerToken
+        self.canProceedFn = canProceedFn
+        self.recordCallFn = recordCallFn
+    }
+
+    public struct BudgetExceededError: Error, LocalizedError {
+        public let reason: String
+        public var errorDescription: String? {
+            return "Budget exceeded: \(reason)"
+        }
+    }
+
+    public func complete(system: String, user: String) async throws -> String {
+        // 估算本次 input token（这个能精确算）
+        let inputTokens = max(1, (system.count + user.count) / charsPerToken)
+        // 输出 token 不知道；用 input 1.5x 当粗估（聊天 completion 典型 input:output 比例）
+        let estOutputTokens = max(1, inputTokens * 3 / 2)
+        // 先看能不能调用
+        if !(await canProceedFn(estOutputTokens, modelHint)) {
+            throw BudgetExceededError(
+                reason: "Daily/monthly cap reached. Open Settings → Budget to adjust.")
+        }
+        // 实际调用
+        let response = try await inner.complete(system: system, user: user)
+        // 真实 output token 重新算
+        let outputTokens = max(1, response.count / charsPerToken)
+        // 记录
+        await recordCallFn(providerName, modelHint, inputTokens, outputTokens)
+        return response
+    }
+}
+
 public enum LLMFactory {
     public static func fromEnvironment() -> LLMProvider {
         let which = (ProcessInfo.processInfo.environment["DREAMVAULT_LLM"] ?? "mock").lowercased()

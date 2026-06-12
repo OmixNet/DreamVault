@@ -61,7 +61,11 @@ public final class BudgetManager: ObservableObject {
     }
 
     /// 决定该不该继续调用。返回 true = 通过；false = 超额阻断。
-    public func canProceed() -> Bool {
+    /// - Parameter estimatedOutputTokens: 预估本次的 output token 数；用于月度成本预测。
+    ///   传 0 = 跳过月度成本检查（只查 daily 次数）。这是 P8 增加的，因为 P3 实现的
+    ///   旧 canProceed() 不支持预估，会出现"调用后才超月度"的盲区。
+    /// - Parameter modelHint: 预估时使用的 model 名（影响 priceTable 查找）
+    public func canProceed(estimatedOutputTokens: Int = 0, modelHint: String = "unknown") -> Bool {
         // maxCallsPerDay > 0 才检查每日调用上限（0 = 无限制）
         if config.maxCallsPerDay > 0, todayCount >= config.maxCallsPerDay {
             FileHandle.standardError.write(Data(
@@ -69,10 +73,19 @@ public final class BudgetManager: ObservableObject {
             return false
         }
         // monthlyBudgetUSD > 0 才检查月度成本（0 = 无限制）
-        if config.monthlyBudgetUSD > 0, monthCost >= config.monthlyBudgetUSD {
-            FileHandle.standardError.write(Data(
-                "[BudgetManager] 阻断：本月成本 $\(String(format: "%.4f", monthCost))/$\(config.monthlyBudgetUSD)\n".utf8))
-            return false
+        if config.monthlyBudgetUSD > 0 {
+            if estimatedOutputTokens > 0, let price = priceTable[modelHint] {
+                let estCost = Double(estimatedOutputTokens) / 1000.0 * price.outputPer1k
+                if monthCost + estCost > config.monthlyBudgetUSD {
+                    FileHandle.standardError.write(Data(
+                        "[BudgetManager] 阻断：本月成本 $\(String(format: "%.4f", monthCost)) + 预估 $\(String(format: "%.4f", estCost)) 即将超 $\(config.monthlyBudgetUSD)\n".utf8))
+                    return false
+                }
+            } else if monthCost >= config.monthlyBudgetUSD {
+                FileHandle.standardError.write(Data(
+                    "[BudgetManager] 阻断：本月成本 $\(String(format: "%.4f", monthCost))/$\(config.monthlyBudgetUSD)\n".utf8))
+                return false
+            }
         }
         return true
     }
