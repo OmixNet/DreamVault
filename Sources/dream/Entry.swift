@@ -317,8 +317,16 @@ struct DreamVaultApp: App {
                 .disabled(menuModel.isRunning)
                 Button("Refresh Status") { menuModel.refreshStatus() }
                 Divider()
+                // P9 P0-4: Import 入口（菜单 + 快捷键 Cmd-I）
+                Button {
+                    NotificationCenter.default.post(name: .dreamVaultImportToRaw, object: nil)
+                } label: {
+                    Label("Import to raw…", systemImage: "square.and.arrow.down")
+                }
+                .keyboardShortcut("i", modifiers: .command)
                 Button(role: .destructive) {
-                    menuModel.rollback()
+                    // P9: 不直接 rollback，走 confirmationDialog
+                    menuModel.requestRollback()
                 } label: {
                     Text("Rollback Last Dream")
                 }
@@ -339,6 +347,8 @@ struct DreamVaultApp: App {
 // P3-T8: Search sheet 触发通知
 extension Notification.Name {
     public static let showVaultSearch = Notification.Name("com.OmixNet.dreamvault.showSearch")
+    // P9 P0-4: 菜单 Import → 触发 VaultBrowser 弹 NSOpenPanel
+    public static let dreamVaultImportToRaw = Notification.Name("com.OmixNet.dreamvault.importToRaw")
 }
 
 // MARK: - 菜单 action helpers（避免在 View body 里堆一堆闭包）
