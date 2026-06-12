@@ -27,6 +27,25 @@ public struct GitStatusBanner: View {
             Spacer()
             if let f = currentFile, watcher.status(for: f) == .conflict {
                 conflictActions(file: f)
+            } else if let f = currentFile,
+                      [.modified, .staged].contains(watcher.status(for: f)),
+                      watcher.diffs[relPathForDiff(of: f)] != nil {
+                Button {
+                    openDiffWindow(for: f)
+                } label: {
+                    Label("Open Diff", systemImage: "arrow.triangle.2.circlepath")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.plain)
+                .help("打开 diff 视图")
+                .padding(.trailing, 4)
+                Button {
+                    watcher.refresh(vaultRoot: model.vaultRoot)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .help("刷新 git 状态")
             } else if watcher.totalModified > 0 {
                 Button {
                     watcher.refresh(vaultRoot: model.vaultRoot)
@@ -92,6 +111,9 @@ public struct GitStatusBanner: View {
                 NSWorkspace.shared.open(file)
             }
             .controlSize(.mini)
+            Divider().frame(height: 14)
+            Button("Show Diff") { openDiffWindow(for: file) }
+                .controlSize(.mini)
         }
     }
 
@@ -113,6 +135,46 @@ public struct GitStatusBanner: View {
         let git = GitRunner(repoRoot: model.vaultRoot)
         _ = try? git.run(["checkout", "--theirs", "--", file.path])
         watcher.refresh(vaultRoot: model.vaultRoot)
+    }
+
+    /// P3-C4: 打开独立 diff 窗口（不阻塞主窗口）。
+    private func openDiffWindow(for file: URL) {
+        let rel = relPathForDiff(of: file)
+        // 取 diff（不存在先重算）
+        if watcher.diffs[rel] == nil {
+            watcher.updateDiff(for: file, vaultRoot: model.vaultRoot)
+        }
+        guard let result = watcher.diffs[rel] else {
+            FileHandle.standardError.write(Data(
+                "[GitStatusBanner] no diff for \(rel)\n".utf8))
+            return
+        }
+        let title = "\(file.lastPathComponent) — diff"
+        let view = DiffViewerView(title: title, diff: result) {
+            // 关闭回调：关 NSWindow
+            NSApp.keyWindow?.close()
+        }
+        // 包装成 NSWindow
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 600),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered, defer: false
+        )
+        window.title = title
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: view)
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func relPathForDiff(of url: URL) -> String {
+        // 与 GitStatusWatcher._relPath 一致：vaultRoot 算 relative
+        guard let root = watcher.vaultRoot else { return url.lastPathComponent }
+        let rootPath = root.standardizedFileURL.path
+        let urlPath = url.standardizedFileURL.path
+        guard urlPath.hasPrefix(rootPath + "/") else { return url.lastPathComponent }
+        return String(urlPath.dropFirst(rootPath.count + 1))
     }
 }
 
