@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import DreamEngine
 
 /// NSTextView 桥接 SwiftUI —— 真正的 macOS 文本编辑器。
 ///
@@ -33,7 +34,7 @@ import AppKit
         context.coordinator.textView = textView
         context.coordinator.scrollView = scrollView
         context.coordinator.lastSavedText = text
-        textView.string = text
+        applyAttributedText(to: textView, from: text)
         return scrollView
     }
 
@@ -44,7 +45,7 @@ import AppKit
         if text != context.coordinator.lastSeenExternalText {
             let savedSelection = textView.selectedRange
             let savedScroll = scrollView.contentView.bounds.origin
-            textView.string = text
+            applyAttributedText(to: textView, from: text)
             textView.selectedRange = savedSelection
             scrollView.contentView.scroll(to: savedScroll)
             context.coordinator.lastSeenExternalText = text
@@ -57,6 +58,15 @@ import AppKit
             textView.isEditable = isEditable
             textView.isSelectable = true
         }
+    }
+
+    /// P2-3: Source 模式也走 attributed string — 标 wikilink (蓝色 + 下划线 + .link)
+    private func applyAttributedText(to textView: NSTextView, from text: String) {
+        var baseAttrs: [NSAttributedString.Key: Any] = [:]
+        baseAttrs[.font] = textView.font
+        baseAttrs[.foregroundColor] = textView.textColor ?? .labelColor
+        let attributed = WikiLinkExtractor.attributedString(from: text, baseAttrs: baseAttrs)
+        textView.textStorage?.setAttributedString(attributed)
     }
 
     public func makeCoordinator() -> Coordinator { Coordinator() }

@@ -145,6 +145,14 @@ public final class MenuBarController: NSObject, NSMenuDelegate, UNUserNotificati
         search.keyEquivalentModifierMask = [.command, .shift]
         menu.addItem(search)
 
+        // 4c. P2-3: Insert Wikilink
+        let insertWL = NSMenuItem(title: "Insert Wikilink…",
+                                  action: #selector(menuInsertWikilink),
+                                  keyEquivalent: "k")
+        insertWL.target = self
+        insertWL.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(insertWL)
+
         // 4b. P2-2: Knowledge Graph
         let graph = NSMenuItem(title: "Knowledge Graph…",
                                action: #selector(menuGraph),
@@ -198,6 +206,11 @@ public final class MenuBarController: NSObject, NSMenuDelegate, UNUserNotificati
     @objc private func menuGraph() {
         guard let m = model else { return }
         AppActions.openGraph(model: m)
+    }
+
+    @objc private func menuInsertWikilink() {
+        guard let m = model else { return }
+        AppActions.insertWikilink(model: m)
     }
 
     @objc private func menuSettings() {
