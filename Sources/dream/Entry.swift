@@ -527,9 +527,51 @@ public final class AppModel: ObservableObject {
         logLines.append("--- dream 开始 \(Self.stamp(Date())) ---")
         defer { isRunning = false }
         do {
-            let llm = GlobalOptions().llmProvider()  // 走环境变量
+            // P4-T2: 改用 ResolvedDreamRuntimeConfig 5 层 priority merge
+            // （CLI / vault config / UserDefaults / env / default）
+            // 替代 GlobalOptions().llmProvider() 单层 env 路径
+            let resolved = ResolvedDreamRuntimeConfig.resolve(
+                settings: DreamSettings.load()
+            )
+            logLines.append("config: provider=\(resolved.llm.provider.rawValue) model=\(resolved.llm.model) 3Step=\(resolved.consolidation.useThreeStepCoT) conc=\(resolved.consolidation.concurrency)")
+
+            // P4-T4: budget 检查
+            let budget = BudgetManager(config: resolved.budget, vaultRoot: vaultRoot)
+            guard budget.canProceed() else {
+                throw DreamCycle.DreamError.consolidateFailed(underlying:
+                    NSError(domain: "Budget", code: 1,
+                           userInfo: [NSLocalizedDescriptionKey:
+                            "LLM 预算已耗尽（今日 \(budget.todayCount) 次 / $\(String(format: "%.2f", budget.monthCost))）。调大 Budget 或等明天。"]))
+            }
+
+            // P4-T3: 从 Keychain 取 API key
+            let apiKey: String? = resolved.llm.keychainItem.flatMap { Keychain.loadIfPresent(itemName: $0) }
+            let llm: LLMProvider
+            switch resolved.llm.provider {
+            case .mock:
+                llm = MockLLMProvider()
+            case .ollama:
+                llm = OllamaProvider(baseURL: resolved.llm.baseURL, model: resolved.llm.model)
+            case .openaiCompat:
+                llm = OllamaProvider(baseURL: resolved.llm.baseURL, model: resolved.llm.model, apiKey: apiKey)
+            }
+
+            // P4-T2: 把 resolved 整段传 DreamCycle（DecayConfig 用 resolved.decay）
+            // P4-T2: consolidation config 来自 resolved
+            let consolidationConfig = ConsolidationConfig(
+                useThreeStepCoT: resolved.consolidation.useThreeStepCoT,
+                concurrency: resolved.consolidation.concurrency
+            )
+            // 替换 Decayer 默认
+            // （暂用 DecayConfig 默认；后续 v0.4 接 resolved.decay 全部）
+
             let git = GitRunner(repoRoot: vaultRoot)
-            let cycle = DreamCycle(vaultRoot: vaultRoot, llm: llm, git: git)
+            let cycle = DreamCycle(
+                vaultRoot: vaultRoot,
+                llm: llm,
+                git: git,
+                config: DreamConfig(consolidation: consolidationConfig)
+            )
             let outcome = try await cycle.runOnce { [weak self] event in
                 Task { @MainActor in
                     self?.handleStageEvent(event)

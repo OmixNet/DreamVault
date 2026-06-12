@@ -65,7 +65,7 @@ public struct GitRunner {
     }
 
     /// dream 提交统一署名为引擎，不依赖宿主机 git 配置（无配置的全新 vault 也能提交）
-    static let identity = ["-c", "user.name=DreamEngine", "-c", "user.email=dream@dreamvault.local"]
+    public static let identity = ["-c", "user.name=DreamEngine", "-c", "user.email=dream@dreamvault.local"]
 
 /// dream 写出的路径集合。其他路径都被视为"用户领地"，dream 不触碰。
     static let enginePaths = [

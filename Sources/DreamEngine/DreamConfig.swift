@@ -34,16 +34,24 @@ public struct VaultConfig: Codable, Sendable, Equatable {
         /// "http://127.0.0.1:11434" 或 "https://api.siliconflow.cn/v1"。
         /// Ollama 工厂会自动追加 "/v1/chat/completions"；openai_compat 直接用原值。
         public var baseURL: String?
-        /// OpenAI 兼容端的 Bearer key（mock/ollama 不需要）
+        /// P4-T3: Keychain item 引用（推荐）。OAuth-style secret 不应明文存 vault
+        /// （vault 是 git repo，所有人 commit 都能看到）。
+        /// 例如 "com.OmixNet.dreamvault.openai-key" —— 实际 key 走
+        /// `security find-generic-password -s <item>` 读。
+        public var keychainItemName: String?
+        /// 已弃用：明文 API key。仅供向后兼容（v0.3.x → v0.4 仍能读）。
+        /// **写** 时强制为 nil；**读** 时如果非 nil 会被 console warning + 忽略。
         public var apiKey: String?
 
         public init(provider: String = "mock",
                     model: String = "llama3.1",
                     baseURL: String? = nil,
+                    keychainItemName: String? = nil,
                     apiKey: String? = nil) {
             self.provider = provider
             self.model = model
             self.baseURL = baseURL
+            self.keychainItemName = keychainItemName
             self.apiKey = apiKey
         }
     }

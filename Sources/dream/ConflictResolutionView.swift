@@ -106,9 +106,18 @@ public struct ConflictResolutionView: View {
         let memIdx = newLedger.memories.firstIndex(where: { $0.id == mem.id })
         guard let memIdx = memIdx else { return }
 
+        // P4-T5: 记录原状态供撤销
+        let originalStatus = newLedger.memories[memIdx].status
+        let originalContradicts = newLedger.memories[memIdx].contradicts
+        var opponentOriginals: [(String, MemoryStatus, [String])] = []
+        for oppID in mem.contradicts {
+            if let i = newLedger.memories.firstIndex(where: { $0.id == oppID }) {
+                opponentOriginals.append((oppID, newLedger.memories[i].status, newLedger.memories[i].contradicts))
+            }
+        }
+
         switch choice {
         case .keepA:
-            // 删 B 们的 contradicts 链（标记 archived）
             for opponentID in mem.contradicts {
                 if let i = newLedger.memories.firstIndex(where: { $0.id == opponentID }) {
                     newLedger.memories[i].status = .archived
@@ -117,7 +126,6 @@ public struct ConflictResolutionView: View {
             }
             newLedger.memories[memIdx].contradicts.removeAll()
         case .keepB:
-            // 删 A 自己
             newLedger.memories[memIdx].status = .archived
             newLedger.memories[memIdx].contradicts.removeAll()
         case .archiveBoth:
@@ -133,13 +141,59 @@ public struct ConflictResolutionView: View {
         // 写回 ledger.json
         do {
             try Persister.saveLedger(newLedger, vaultRoot: model.vaultRoot)
-            // 触发 AppModel refresh
+            // P4-T5: 单独 git commit 留 audit trail
+            let git = GitRunner(repoRoot: model.vaultRoot)
+            _ = try? git.run(["add", ".dream/ledger.json"])
+            let msg = "conflict-resolution: \(mem.id) → \(choice) (by user)"
+            _ = try? git.run(GitRunner.identity + ["commit", "-m", msg])
+            // 写 dream-report 一段（追加到最近一份；不阻塞）
+            appendConflictReport(mem: mem, choice: choice,
+                                 originalStatus: originalStatus,
+                                 originalContradicts: originalContradicts,
+                                 opponentOriginals: opponentOriginals)
+
             model.refreshStatus()
             FileHandle.standardError.write(Data(
-                "[ConflictResolution] \(mem.id) → \(choice)\n".utf8))
+                "[ConflictResolution] \(mem.id) → \(choice) (audit written)\n".utf8))
         } catch {
             FileHandle.standardError.write(Data(
                 "[ConflictResolution] 写盘失败: \(error.localizedDescription)\n".utf8))
         }
+    }
+
+    /// P4-T5: 追加一段到 .dream/conflict-resolutions.log（可 git diff 看到）
+    private func appendConflictReport(mem: Memory, choice: Resolution,
+                                      originalStatus: MemoryStatus,
+                                      originalContradicts: [String],
+                                      opponentOriginals: [(String, MemoryStatus, [String])]) {
+        let logFile = model.vaultRoot.appendingPathComponent(".dream/conflict-resolutions.log")
+        let line = """
+        [\(Self.timestamp())] CONFLICT RESOLUTION
+          target: \(mem.id) ("\(mem.text.prefix(60))...")
+          originalStatus: \(originalStatus.rawValue)
+          originalContradicts: \(originalContradicts)
+          choice: \(choice == .keepA ? "keepA" : choice == .keepB ? "keepB" : "archiveBoth")
+          opponentOriginals: \(opponentOriginals.map { "\($0.0)=\($0.1.rawValue)" }.joined(separator: ", "))
+          undo: re-run with --undo-conflict \(mem.id) (TODO)
+
+        """
+        try? FileManager.default.createDirectory(
+            at: model.vaultRoot.appendingPathComponent(".dream"),
+            withIntermediateDirectories: true)
+        if let data = line.data(using: .utf8) {
+            if let handle = try? FileHandle(forWritingTo: logFile) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                try? handle.close()
+            } else {
+                try? data.write(to: logFile)
+            }
+        }
+    }
+
+    private static func timestamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd-HHmmss"
+        return f.string(from: Date())
     }
 }
