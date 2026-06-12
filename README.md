@@ -2,6 +2,8 @@
 
 macOS 原生 Markdown 知识库 + dream 夜间记忆整理。本仓库包含 **内核**（DreamEngine 库 + 端到端测试 + 文档）、**dream CLI**、**dream SwiftUI GUI** 和 **launchd 夜间调度**。
 
+**当前版本：v0.3.0**（234 tests, 0 failures，merge commit `7713250`）。
+
 ## 跑起来
 
 ```bash
@@ -210,6 +212,70 @@ bash scripts/uninstall.sh --purge   # 全清
 
 - GitHub: <https://github.com/OmixNet/DreamVault>
 - 协议：MIT（待定，可改）
+
+## v0.3.0 — Production readiness（Settings 真正接入 + Keychain + Budget）
+
+**真用户问题**：v0.2.0 review 指出 Settings 面板"装个样"——能保存到 UserDefaults 但
+不接运行路径。CLI/GUI 都还看 `GlobalOptions().llmProvider()`（env-only）。
+本版本把"用户在某处配的"统一到一个 `ResolvedDreamRuntimeConfig`，5 层
+priority 合并后传给 `DreamCycle`。
+
+**新增 5 大产品功能 + 修 6 个生产隐患**：
+
+- **T1: ResolvedDreamRuntimeConfig** — 5-source priority merge
+  ```
+  CLI flag → .dream/config.json → UserDefaults → env vars → defaults
+  ```
+  provider 整段覆盖（不是逐字段 merge）。`AppModel.runDream` 改用 `resolve()`。
+- **T2: Settings 真正接入运行路径** — `runDream` 不再看 env vars / GlobalOptions
+- **T3: Keychain wrapper** — `Sources/DreamEngine/Keychain.swift`
+  - API key 走 macOS Generic Password，**绝不进 vault config / git**
+  - `VaultConfig.LLMBlock.apiKey` 字段保留（向后兼容）但写时强制 nil
+  - `Settings → LLM` tab "Set API Key…" 走 NSSecureTextField → Keychain
+- **T4: BudgetManager** — `Sources/DreamEngine/BudgetManager.swift`
+  - 跟踪每日 LLM 调用 + 月度成本（Ollama 免费，云端 7 个 provider 价格表）
+  - `canProceed()` 超额阻断；每日/月度持久化到 `.dream/budget-YYYY-MM-DD.json`
+  - `Settings → Budget` tab 调 `maxCallsPerDay` / `monthlyBudgetUSD` / `maxRawFilesPerRun`
+- **T5: Conflict resolution audit** — `ConflictResolutionView.resolve()` 现在
+  1. 写 `Persister.saveLedger` 改 `.dream/ledger.json`
+  2. **单独 git commit** "conflict-resolution: <id> → <choice> (by user)" → 用户 `git log` 看到裁决历史
+  3. **追加 `.dream/conflict-resolutions.log`**（原状态 + 撤销提示 TODO）
+- **T6: Nightly 状态展示 + 自定义时间** — `NightlyDreamScheduler.Status` struct
+  (enabled/nextRunAt/lastRunAt/lastExitCode) + 接受 hour/minute
+  从 plist 读 StartCalendarInterval 算 next run
+- **T7: Settings 5 tabs** — General / LLM / **Budget** / Dream / **Privacy**
+  Privacy 包含 redact / allowCloudSendRaw / diagnostics 字段
+
+**15 个新测试**（RuntimeConfigAndBudgetTests）：
+- 6 个 5-source priority 测试
+- 3 个 Keychain roundTrip / loadIfPresent / delete
+- 3 个 BudgetManager：noLimit / blocksAfterMaxCalls / costAccumulates
+- 2 个 Nightly / Time clamping
+- 1 个 Conflict audit 路径
+
+**意外彩蛋**：写 `testBudget_costAccumulates` 时发现 P3 阶段的 BudgetManager.canProceed
+逻辑反了（`maxCallsPerDay==0` 早退成"无限制"，但实际 0 = "无限"，>0 才是"限制"）
+→ 测试保住了真 bug。
+
+测试: 219 → 234 (+15)
+
+## v0.2.2 — C1-C4 Editor polish
+
+v0.2.0 → v0.2.2 加 4 个 GUI polish（每个独立 worktree + merge commit）：
+
+- **C1: 原生菜单** — File/View/Dream/Help 4 套 + 6 个 key binding (Cmd-N/O/R/Shift-O/Shift-R/F5)
+  + AppActions（New Note/Open Vault/Open File/Reveal in Finder/Export Diagnostics）
+  + Settings menu (Cmd-,)
+- **C2: Markdown 表格 + 图片** — `MarkdownRenderer` 加 `.table` / `.image` Block
+  + 真实 `NSTextAttachment` 图片 + monospace 表格对齐 + 🖼 emoji fallback
+- **C3: DreamPanel 5 步骤 stage** — `DreamCycle.onStage` 回调 + 5 个
+  `DreamStage` @Published（gather/consolidate/decay/persist/commit）
+  + 进度图标按 state 切换 + detail 文字
+- **C4: 真 diff 视图 + App icon** — `DiffViewerView` 独立 NSWindow 双栏
+  unified diff（绿/红/灰配色） + 程序生成的紫蓝渐变月亮
+  `AppIcon.icns` (201 KB，13 个 size)
+
+测试: 184 → 207 (+23 across C1-C4 + P2)
 
 ## v0.2.0 — Editor 升级 + P0 入口修复
 
