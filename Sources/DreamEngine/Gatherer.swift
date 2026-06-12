@@ -141,6 +141,18 @@ public struct Gatherer {
         let bodyStartLine: Int   // 1-based，正文第一行在原文件中的行号
     }
 
+    // MARK: - P3-T5: 给 VaultStatus.load 用的 frontmatter 判定 helper
+    /// 是否应被 dream 处理（三分支语义，与 gather() 内一致）。
+    ///   - 显式 `processed: false` → true
+    ///   - 显式 `processed: true`  → false
+    ///   - 无 frontmatter           → true（保守按"未声明"对待）
+    public static func shouldProcessRaw(content: String) -> Bool {
+        let doc = parseFrontmatter(content)
+        let flag = doc.fields["processed"]?.lowercased()
+        if flag == "true" { return false }
+        return true
+    }
+
     static func parseFrontmatter(_ content: String) -> ParsedDoc {
         let lines = content.components(separatedBy: "\n")
         guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else {

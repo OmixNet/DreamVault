@@ -570,7 +570,11 @@ struct VaultStatus {
         var s = VaultStatus()
         let fm = FileManager.default
 
-        // raw 候选
+        // raw 候选（P3-T5 fix: 用 Gatherer.parseFrontmatter 替代 .contains("processed: false") 全文扫描）
+        // 老逻辑：读全文 + .contains("processed: false")，对每个 .md 都读几十 KB 到 MB。
+        // 新逻辑：复用 Gatherer 已有的 parseFrontmatter + 同样的"显式 false 必收 / 显式 true 跳过 /
+        //  无 frontmatter 保守按未处理" 三分支语义，只解析 frontmatter 头部（O(几百字节)）
+        // 而非全文。
         let rawDir = vaultRoot.appendingPathComponent("raw")
         if fm.fileExists(atPath: rawDir.path) {
             let processed = Gatherer.loadProcessedRegistry(vaultRoot: vaultRoot)
@@ -579,7 +583,7 @@ struct VaultStatus {
                 let rel = "raw/\(f.lastPathComponent)"
                 if processed.contains(rel) { return false }
                 guard let content = try? String(contentsOf: f, encoding: .utf8) else { return false }
-                return content.contains("processed: false")
+                return Gatherer.shouldProcessRaw(content: content)
             }.count
         }
 
