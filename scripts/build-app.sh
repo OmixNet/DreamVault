@@ -46,6 +46,13 @@ mkdir -p "$MACOS"
 cp "$SOURCE_BIN" "$MACOS/DreamVault"
 chmod +x "$MACOS/DreamVault"
 
+# —— 2b. 拷 AppIcon.icns（如果存在） ——
+if [ -f "$REPO/Resources/AppIcon.icns" ]; then
+    mkdir -p "$CONTENTS/Resources"
+    cp "$REPO/Resources/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
+    echo "    AppIcon: $(ls -la "$CONTENTS/Resources/AppIcon.icns" | awk '{print $5}') bytes"
+fi
+
 # —— 3. 写 Info.plist ——
 echo "==> [3/5] Writing Info.plist..."
 cat > "$CONTENTS/Info.plist" <<EOF
@@ -71,6 +78,10 @@ cat > "$CONTENTS/Info.plist" <<EOF
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>LSUIElement</key>
