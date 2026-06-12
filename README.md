@@ -279,7 +279,7 @@ v0.2.0 → v0.2.2 加 4 个 GUI polish（每个独立 worktree + merge commit）
 
 ## v0.2.0 — Editor 升级 + P0 入口修复
 
-![DreamVault v0.2.0 — 4 栏布局 + 顶栏 Git banner](docs/screenshots/v0.2.0-launch.jpg)
+![DreamVault v0.3.0 — 4 栏布局 + 顶栏 Git banner](docs/screenshots/v0.3.0-launch.jpg)
 
 
 
