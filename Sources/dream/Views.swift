@@ -244,6 +244,16 @@ struct DreamPanel: View {
             row("ledger 总数", value: "\(model.status.totalMemories)",
                 detail: "durable \(model.status.durableCount) / candidate \(model.status.candidateCount) / archived \(model.status.archivedCount)")
             row("待裁决", value: "\(model.status.withContradictsCount)")
+
+            // P3-C3: 5 步骤 stage 进度
+            if model.isRunning || model.lastOutcome != nil || model.lastError != nil {
+                Divider().padding(.vertical, 4)
+                Text("Pipeline").font(.subheadline).bold()
+                ForEach(model.dreamStages) { stage in
+                    stageRow(stage)
+                }
+            }
+
             if let r = model.lastOutcome {
                 Divider().padding(.vertical, 4)
                 Text("Last Run").font(.subheadline).bold()
@@ -258,6 +268,53 @@ struct DreamPanel: View {
                     .font(.caption)
                     .foregroundColor(.red)
                     .padding(.top, 4)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func stageRow(_ stage: DreamStage) -> some View {
+        HStack(spacing: 6) {
+            // 图标按状态切换
+            switch stage.state {
+            case .pending:
+                Image(systemName: "circle")
+                    .foregroundColor(.secondary)
+                    .frame(width: 16)
+            case .running:
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+                    .frame(width: 16, height: 16)
+            case .success:
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
+                    .frame(width: 16)
+            case .failed:
+                Image(systemName: "xmark.octagon.fill")
+                    .foregroundColor(.red)
+                    .frame(width: 16)
+            case .skipped:
+                Image(systemName: "minus.circle")
+                    .foregroundColor(.secondary)
+                    .frame(width: 16)
+            }
+            Image(systemName: stage.system)
+                .foregroundColor(.secondary)
+                .frame(width: 16)
+            Text(stage.title)
+                .font(.caption)
+            Spacer()
+            // detail 文字
+            switch stage.state {
+            case .success(let detail), .failed(let detail):
+                Text(detail)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+            default:
+                EmptyView()
             }
         }
     }

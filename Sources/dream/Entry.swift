@@ -383,6 +383,32 @@ extension FocusedValues {
     }
 }
 
+// MARK: - P3-C3: 5 步骤 stage 进度状态
+
+struct DreamStage: Identifiable, Equatable {
+    enum State: Equatable {
+        case pending
+        case running
+        case success(String)  // detail 文字（"done: 3 files"）
+        case failed(String)
+        case skipped          // 没候选时 consolidate 跳过
+    }
+    let key: String       // "gather" / "consolidate" / "decay" / "persist" / "commit"
+    let title: String     // 用户看的标题
+    let system: String    // SF Symbol
+    var state: State
+
+    var id: String { key }
+
+    static let allStages: [DreamStage] = [
+        DreamStage(key: "gather",      title: "Gather",      system: "tray.and.arrow.down.fill", state: .pending),
+        DreamStage(key: "consolidate", title: "Consolidate", system: "wand.and.stars",           state: .pending),
+        DreamStage(key: "decay",       title: "Decay",       system: "hourglass",                state: .pending),
+        DreamStage(key: "persist",     title: "Persist",     system: "square.and.arrow.down.fill", state: .pending),
+        DreamStage(key: "commit",      title: "Commit",      system: "checkmark.seal.fill",      state: .pending),
+    ]
+}
+
 // MARK: - AppModel（@MainActor ObservableObject）
 //
 // 三个面板共享状态：
@@ -401,6 +427,9 @@ final class AppModel: ObservableObject {
     @Published var status: VaultStatus = .init()
     @Published var reportPath: String? = nil
     @Published var logLines: [String] = []
+    /// P3-C3: 5 步 stage 进度（gather / consolidate / decay / persist / commit）。
+    /// 每步独立状态：pending / running / success(detail) / failed(detail) / skipped。
+    @Published var dreamStages: [DreamStage] = DreamStage.allStages
     // T1 起 EditorState 接管 buffer / dirty 状态；保留 @Published 占位以兼容
     // 其他可能直接读这两个字段的视图代码（实际 EditorPane 自己用 EditorState）
     @Published var textEditorContent: String = ""
@@ -443,18 +472,56 @@ final class AppModel: ObservableObject {
         status = VaultStatus.load(from: vaultRoot)
     }
 
+    /// 重置 stages 到初始 pending 状态
+    private func resetDreamStages() {
+        dreamStages = DreamStage.allStages
+    }
+
+    /// 把 DreamCycle onStage 字符串映射到对应 stage 状态
+    private func handleStageEvent(_ event: String) {
+        // event 形如 "gather" / "gather done: 3 files" / "persist failed: ..."
+        let key: String
+        if event.hasPrefix("link") { key = "consolidate" }  // link 是 consolidate 的一部分
+        else if event.hasPrefix("gather") { key = "gather" }
+        else if event.hasPrefix("consolidate") { key = "consolidate" }
+        else if event.hasPrefix("decay") { key = "decay" }
+        else if event.hasPrefix("persist") { key = "persist" }
+        else if event.hasPrefix("commit") { key = "commit" }
+        else { return }
+
+        if let idx = dreamStages.firstIndex(where: { $0.key == key }) {
+            if event.contains("failed:") {
+                dreamStages[idx].state = .failed(event)
+            } else if event.contains(" done:") {
+                dreamStages[idx].state = .success(event)
+            } else {
+                dreamStages[idx].state = .running
+            }
+        }
+    }
+
     /// GUI 内的 Run Dream。直接调 DreamCycle，不开子进程
     func runDream() async {
         guard !isRunning else { return }
         isRunning = true
         lastError = nil
+        resetDreamStages()
         logLines.append("--- dream 开始 \(Self.stamp(Date())) ---")
         defer { isRunning = false }
         do {
             let llm = GlobalOptions().llmProvider()  // 走环境变量
             let git = GitRunner(repoRoot: vaultRoot)
             let cycle = DreamCycle(vaultRoot: vaultRoot, llm: llm, git: git)
-            let outcome = try await cycle.runOnce()
+            let outcome = try await cycle.runOnce { [weak self] event in
+                Task { @MainActor in
+                    self?.handleStageEvent(event)
+                    self?.logLines.append("[\(Self.stamp(Date()))] \(event)")
+                }
+            }
+            // 全部 success 后把还没显式标 "done" 的 stage 标 success
+            for i in dreamStages.indices where dreamStages[i].state == .running {
+                dreamStages[i].state = .success("done")
+            }
             lastOutcome = outcome
             reportPath = outcome.reportPath
             logLines.append("gathered=\(outcome.gatheredCount) accepted=\(outcome.acceptedCount) committed=\(outcome.committed)")

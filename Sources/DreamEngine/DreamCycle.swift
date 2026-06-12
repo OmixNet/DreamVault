@@ -92,7 +92,10 @@ public struct DreamCycle {
 
     /// 跑一次完整 dream。任何阶段失败都自动回滚已写文件。
     /// 失败时也返回完整 trace（已 gather 但未提交的内容），便于 dream-report 留痕。
-    public func runOnce(now: Date = Date()) async throws -> Outcome {
+    /// - Parameter onStage: 每阶段切换时调用一次（label: gather / consolidate / decay / persist / commit），
+    ///   GUI 用此驱动 5 步骤进度条。失败时调用 label: "<stage> failed: <err>"。
+    public func runOnce(now: Date = Date(),
+                        onStage: ((String) -> Void)? = nil) async throws -> Outcome {
         // — 0. 把 raw/ 挂为只读（架构第 1 节末段） —
         // 这是"原则 1 变成机制"的入口。每次 dream 启动都强压一次，确保
         // 任何在两次 dream 之间被 chmod +w 改动过的文件回到 0o555。
@@ -121,11 +124,14 @@ public struct DreamCycle {
         }
 
         // — 1. Gather：raw → 候选集 —
+        onStage?("gather")
         let gatherer = Gatherer(vaultRoot: vaultRoot, redactor: redactor)
         let gathered: Gatherer.GatherResult
         do {
             gathered = try gatherer.gather()
+            onStage?("gather done: \(gathered.gatheredFiles.count) files")
         } catch {
+            onStage?("gather failed: \(error.localizedDescription)")
             throw DreamError.gatherFailed(underlying: error)
         }
 
@@ -138,6 +144,7 @@ public struct DreamCycle {
             // — 2. Consolidate：新候选 → 经四道闸的可信教训 —
             // 这里把 Gatherer 已脱敏的候选原样传给 Consolidator；Consolidator 内
             // 还会再脱敏一次（redactBeforeConsolidate 默认 true），是幂等的。
+            onStage?("consolidate")
             let consolidator = Consolidator(llm: llm, config: config.consolidation, redactor: redactor)
             // 主入口：根据 config.consolidation.useThreeStepCoT 路由
             //   true  → consolidate3Step（生产 LLM 推荐，含 analyze → generate → verify）
@@ -145,7 +152,9 @@ public struct DreamCycle {
             // 多候选并发上限由 config.consolidation.concurrency 控制。
             do {
                 newAccepted = try await consolidator.consolidateSmart(gathered.candidates)
+                onStage?("consolidate done: \(newAccepted.count) accepted")
             } catch {
+                onStage?("consolidate failed: \(error.localizedDescription)")
                 // 失败：撤掉已 gather 的状态（不写 processed 即可，下次会重收）
                 throw DreamError.consolidateFailed(underlying: error)
             }
@@ -168,6 +177,7 @@ public struct DreamCycle {
                             }
                         }
                     } catch {
+                        onStage?("link failed: \(error.localizedDescription)")
                         // 矛盾检测失败：回滚 — 丢弃新接受的教训（不持久化它们）
                         throw DreamError.consolidateFailed(underlying: error)
                     }
@@ -183,10 +193,13 @@ public struct DreamCycle {
         }
 
         // — 3. Decay：扫所有记忆算 salience 决定动作 —
+        onStage?("decay")
         let decayer = Decayer()
         let decayResults = decayer.evaluateAll(mergedLedger)
+        onStage?("decay done: \(decayResults.count) memories evaluated")
 
         // — 4. Persist：写 MEMORY.md、wiki/、ledger.json、dream-report，登记 processed —
+        onStage?("persist")
         let persister = Persister(vaultRoot: vaultRoot, git: dryRun ? nil : git)
         let input = Persister.Input(
             ledger: mergedLedger,
@@ -199,12 +212,15 @@ public struct DreamCycle {
         let outcome: Persister.Outcome
         do {
             outcome = try persister.persist(input)
+            let written = outcome.wikiPagesWritten.count + outcome.archivedIDs.count + 1  // +1 for memory.md
+            onStage?("persist done: written \(written) files, committed=\(outcome.committed)")
         } catch {
             // 失败回滚：
             // 1) git tracked 的文件（MEMORY.md / .dream/ledger.json / .dream/processed.json /
             //    wiki/ / archive/）由 git.discardTrackedChanges() 还原（最干净）
             // 2) 当次生成的 dream-report-{stamp}.md 由 rollbackDreamArtifacts 清掉
             // 3) 绝不动历史 dream-report-* —— 暴力删目录的风险见 git log 早期修复
+            onStage?("persist failed: \(error.localizedDescription)")
             try? rollbackDreamArtifacts(vaultRoot: vaultRoot, currentReportStamp: Self.reportStamp(now: now))
             if let git { try? git.discardTrackedChanges() }
             throw DreamError.persistFailed(underlying: error)
