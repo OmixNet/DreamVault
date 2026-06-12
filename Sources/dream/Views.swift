@@ -9,7 +9,15 @@ struct MainView: View {
     @StateObject private var editorState = EditorState()
     @StateObject private var gitWatcher = GitStatusWatcher()
 
+    /// P3-C1: 把 model 和 editorState 写进 FocusedValues，菜单 command 才能读
     var body: some View {
+        content
+            .focusedSceneValue(\.appModel, model)
+            .focusedSceneValue(\.editorState, editorState)
+    }
+
+    @ViewBuilder
+    private var content: some View {
         NavigationSplitView {
             VaultBrowser()
                 .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 400)
