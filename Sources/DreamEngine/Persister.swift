@@ -393,7 +393,9 @@ public struct Persister {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try enc.encode(ledger).write(to: url)
+        let data = try enc.encode(ledger)
+        // P7-T3: 写 tmp + atomic rename 防止崩了写一半
+        try AtomicFile.write(data: data, to: url)
     }
 
     // MARK: - 工具

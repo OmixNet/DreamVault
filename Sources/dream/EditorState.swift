@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import DreamEngine
 
 /// EditorPane 的状态机：管理当前文件、autosave debounce、脏检查、强制 flush。
 ///
@@ -110,7 +111,8 @@ public final class EditorState: ObservableObject {
         guard isDirty, let file = currentFile else { return }
         let toWrite = buffer
         do {
-            try toWrite.write(to: file, atomically: true, encoding: .utf8)
+            // P7-T3: 走 AtomicFile（tmp + fsync + atomic rename）
+            try AtomicFile.write(data: Data(toWrite.utf8), to: file)
             lastSavedSnapshot = toWrite
             isDirty = false
         } catch {

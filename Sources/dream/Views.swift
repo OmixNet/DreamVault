@@ -10,6 +10,8 @@ struct MainView: View {
     @StateObject private var gitWatcher = GitStatusWatcher()
     @StateObject private var searcher = VaultSearcher()
     @StateObject private var updateChecker = UpdateChecker()
+    /// P7-T1: 首次启动弹 welcome sheet
+    @State private var showWelcome: Bool = false
 
     /// P3-C1: 把 model 和 editorState 写进 FocusedValues，菜单 command 才能读
     var body: some View {
@@ -79,6 +81,25 @@ struct MainView: View {
             NotificationCenter.default.addObserver(
                 forName: .showVaultSearch, object: nil, queue: .main
             ) { _ in showSearch = true }
+            // P7-T1: first-run welcome
+            if FirstRunTracker.shouldShow() {
+                // 0.5s 延迟让主窗先起，避免 sheet 紧贴
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    showWelcome = true
+                }
+            }
+        }
+        .onChange(of: model.vaultRoot) { _ in
+            // 用户手动换 vault 后重置 welcome（让他重选 LLM 适配新 vault）
+            FirstRunTracker.reset()
+        }
+        .sheet(isPresented: $showWelcome) {
+            FirstRunWelcomeView { _ in
+                showWelcome = false
+                // welcome 关闭后立即 refresh 一次（用刚配的 vault）
+                model.refreshStatus()
+                gitWatcher.refresh(vaultRoot: model.vaultRoot)
+            }
         }
         .onChange(of: model.selectedFile) { newFile in
             gitWatcher.refresh(vaultRoot: model.vaultRoot)
