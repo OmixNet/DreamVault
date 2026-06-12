@@ -848,6 +848,37 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - P9: Rollback 二次确认
+    //
+    // 之前 Rollback 按钮一键就 revert 上次 dream，误触即丢当晚成果。
+    // P9 修复：先弹 confirmationDialog 列出"将被回滚的 commit 内容"，
+    // 用户确认后才真执行。
+    /// nil = 不显示 dialog；非 nil = 显示并等待用户点
+    @Published var rollbackConfirmation: GitRunner.LastCommitSummary? = nil
+
+    /// 准备 rollback 确认（用户点 Rollback 按钮调用此方法）
+    func requestRollback() {
+        let git = GitRunner(repoRoot: vaultRoot)
+        do {
+            rollbackConfirmation = try git.lastCommitSummary()
+        } catch {
+            lastError = "rollback 准备失败: \(error.localizedDescription)"
+            logLines.append("rollback 准备失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// 取消 rollback（用户在 dialog 选了 Cancel）
+    func cancelRollback() {
+        rollbackConfirmation = nil
+        logLines.append("rollback cancelled by user")
+    }
+
+    /// 确认 rollback（在 dialog 选了 Confirm）
+    func confirmRollback() {
+        rollbackConfirmation = nil
+        rollback()
+    }
+
     static func stamp(_ d: Date) -> String {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd HH:mm:ss"
