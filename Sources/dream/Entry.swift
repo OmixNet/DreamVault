@@ -252,7 +252,7 @@ struct DreamVaultApp: App {
         .windowResizability(.contentMinSize)
         // P3-T7: Settings scene（独立于 WindowGroup，SwiftUI 自动挂"Preferences…Cmd-,"菜单项）
         Settings {
-            SettingsView()
+            SettingsView(vaultPath: model.vaultRoot.path)
         }
         .commands {
             // 去掉默认 New File（用我们的 New Note 替代）
