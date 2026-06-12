@@ -180,6 +180,9 @@ struct VaultBrowser: View {
                 ForEach(rawFiles(), id: \.self) { url in
                     fileRow(url: url, system: "doc.text", tint: .secondary)
                 }
+                // P9 P0-4: 拖拽 / 导入入口
+                // 既然 "扔文件进来" 是产品承诺，raw/ section 底部给一个明显的入口
+                importHintRow
             }
             ForEach(wikiSections) { section in
                 let files = wikiFiles(under: section.rel)
@@ -216,6 +219,133 @@ struct VaultBrowser: View {
         }
         .listStyle(.sidebar)
         .frame(minWidth: 200)
+        // P9 P0-4: 接受 Finder 拖拽进整面板
+        // 拖到 raw/ 区域或者整个 List 都行，List.onDrop 拿拖入 URLs
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            handleDrop(providers: providers)
+        }
+        .overlay {
+            // 拖入时的视觉反馈
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.accentColor, lineWidth: 3)
+                    .background(Color.accentColor.opacity(0.05))
+                    .overlay {
+                        VStack(spacing: 6) {
+                            Image(systemName: "arrow.down.doc.fill")
+                                .font(.title)
+                            Text("松手导入到 raw/")
+                                .font(.caption).bold()
+                        }
+                        .foregroundColor(.accentColor)
+                    }
+                    .allowsHitTesting(false)
+            }
+        }
+        // P9 P0-4: 监听菜单 Import to raw... 通知（Cmd-I）
+        .onReceive(NotificationCenter.default.publisher(for: .dreamVaultImportToRaw)) { _ in
+            openImportPanel()
+        }
+    }
+
+    @State private var isDropTargeted: Bool = false
+    @State private var importResultBanner: ImportResultBanner? = nil
+    struct ImportResultBanner: Identifiable, Equatable {
+        let id = UUID()
+        let succeeded: Int
+        let skipped: Int
+        let failed: Int
+    }
+
+    @ViewBuilder
+    private var importHintRow: some View {
+        Button {
+            openImportPanel()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "square.and.arrow.down")
+                    .foregroundColor(.secondary)
+                Text("拖 .md/.txt 进来，或点这里选文件")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .help("导入到 raw/")
+        // 浮动的导入结果反馈
+        .overlay(alignment: .bottom) {
+            if let banner = importResultBanner {
+                Text("✓ 导入 \(banner.succeeded) 跳过 \(banner.skipped) 失败 \(banner.failed)")
+                    .font(.caption2)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(4)
+                    .padding(.bottom, -28)
+                    .transition(.opacity)
+                    .id(banner.id)
+                    .task(id: banner.id) {
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        await MainActor.run {
+                            withAnimation { importResultBanner = nil }
+                        }
+                    }
+            }
+        }
+    }
+
+    /// 处理拖入的 URLs（Finder 拖文件进来）
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        let group = DispatchGroup()
+        var collected: [URL] = []
+        for p in providers {
+            group.enter()
+            _ = p.loadObject(ofClass: URL.self) { url, _ in
+                if let u = url { collected.append(u) }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) {
+            importURLs(collected)
+        }
+        return true
+    }
+
+    /// 走 import pipeline：调 RawImporter 然后刷新 + 显示结果
+    private func importURLs(_ urls: [URL]) {
+        let result = RawImporter.importToRaw(sourceURLs: urls, vaultRoot: model.vaultRoot)
+        withAnimation { importResultBanner = ImportResultBanner(
+            succeeded: result.succeeded.count,
+            skipped: result.skipped.count,
+            failed: result.failed.count
+        ) }
+        model.refreshStatus()
+        // stderr 留痕（log tab 能看到）
+        if !result.succeeded.isEmpty {
+            FileHandle.standardError.write(Data(
+                "[VaultBrowser] imported \(result.succeeded.count) file(s) to raw/\n".utf8))
+        }
+        for s in result.skipped {
+            FileHandle.standardError.write(Data(
+                "[VaultBrowser] skipped: \(s)\n".utf8))
+        }
+        for f in result.failed {
+            FileHandle.standardError.write(Data(
+                "[VaultBrowser] failed: \(f)\n".utf8))
+        }
+    }
+
+    /// 调 NSOpenPanel 选文件导入
+    private func openImportPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = []
+        panel.message = "选 .md / .txt 文件导入到 raw/"
+        if panel.runModal() == .OK {
+            importURLs(panel.urls)
+        }
     }
 
     /// DisclosureGroup 折叠状态：默认全展开
