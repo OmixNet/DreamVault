@@ -26,8 +26,26 @@ public struct ConflictResolutionView: View {
         ledger.memories.filter { !$0.contradicts.isEmpty }
     }
 
+    /// P5-T1: 当前 vault 的 audit log 倒序（最近 N 条）
+    @State private var auditLogLines: [String] = []
+    @State private var showAuditLog: Bool = false
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("\(conflicts.count) 待裁决")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                Spacer()
+                Button {
+                    showAuditLog.toggle()
+                } label: {
+                    Label("Audit Log", systemImage: "doc.text.magnifyingglass")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding(.bottom, 4)
             ForEach(conflicts, id: \.id) { mem in
                 conflictRow(mem: mem)
                 if expandedID == mem.id {
@@ -36,6 +54,80 @@ public struct ConflictResolutionView: View {
                 }
                 Divider()
             }
+            if showAuditLog {
+                auditLogView
+            }
+        }
+        .onAppear { reloadAuditLog() }
+    }
+
+    @ViewBuilder
+    private var auditLogView: some View {
+        Divider()
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Audit Log (.dream/conflict-resolutions.log)")
+                    .font(.caption).bold()
+                Spacer()
+                Button("Undo Last") { undoLast() }
+                    .controlSize(.mini)
+                    .disabled(auditLogLines.isEmpty)
+                Button("Close") { showAuditLog = false }
+                    .controlSize(.mini)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(Array(auditLogLines.suffix(8).enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(.caption2, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(6)
+            }
+            .background(Color(NSColor.controlBackgroundColor))
+            .cornerRadius(4)
+            .frame(maxHeight: 120)
+        }
+        .padding(.top, 6)
+    }
+
+    private func reloadAuditLog() {
+        let logFile = model.vaultRoot.appendingPathComponent(".dream/conflict-resolutions.log")
+        if let data = try? String(contentsOf: logFile, encoding: .utf8) {
+            auditLogLines = data.components(separatedBy: "\n")
+        } else {
+            auditLogLines = []
+        }
+    }
+
+    /// P5-T1: 撤销最近一次 conflict resolution。
+    /// 流程：git revert HEAD → ledger.json 自动回到上次未裁决状态
+    /// → model.refreshStatus() → 列表里这条 conflict 重新出现
+    private func undoLast() {
+        let git = GitRunner(repoRoot: model.vaultRoot)
+        do {
+            let newHead = try git.revertLastCommit()
+            // append 到 audit log 一行 "UNDONE: <hash>"
+            let logFile = model.vaultRoot.appendingPathComponent(".dream/conflict-resolutions.log")
+            if let data = "  undone: revert → \(newHead)\n".data(using: .utf8) {
+                if let handle = try? FileHandle(forWritingTo: logFile) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    try? handle.close()
+                } else {
+                    try? data.write(to: logFile)
+                }
+            }
+            FileHandle.standardError.write(Data(
+                "[ConflictResolution] undone via git revert → \(newHead)\n".utf8))
+            model.refreshStatus()
+            reloadAuditLog()
+        } catch {
+            FileHandle.standardError.write(Data(
+                "[ConflictResolution] undo failed: \(error.localizedDescription)\n".utf8))
         }
     }
 

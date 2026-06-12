@@ -31,6 +31,21 @@ public struct SettingsView: View {
     @ViewBuilder
     private var generalTab: some View {
         Form {
+            Section("Appearance") {
+                Picker("Theme", selection: $colorSchemeMode) {
+                    ForEach(ColorSchemeController.Mode.allCases) { m in
+                        Text(m.displayName).tag(m)
+                    }
+                }
+                .pickerStyle(.menu)
+                .onChange(of: colorSchemeMode) { newMode in
+                    ColorSchemeController.shared.mode = newMode
+                }
+                Text("默认跟系统；可强制 Light / Dark")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             Section("Vault Location") {
                 HStack {
                     Text(settings.vaultPath)
@@ -62,6 +77,9 @@ public struct SettingsView: View {
         .formStyle(.grouped)
         .padding()
     }
+
+    /// P5-T2: 双向绑定 ColorSchemeController.mode
+    @State private var colorSchemeMode: ColorSchemeController.Mode = ColorSchemeController.shared.mode
 
     // MARK: - LLM
 

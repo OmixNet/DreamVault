@@ -206,6 +206,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct DreamVaultApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var model = AppModel()
+    /// P5-T2: 全局 color scheme 覆盖（system/light/dark）
+    @StateObject private var colorScheme = ColorSchemeController.shared
     /// P3-C1: 原生菜单 + 标准 macOS key bindings。
     /// macOS 13 用 @FocusedValue（macOS 14+ 才升 @FocusedObject）。
     /// MainView 在 view 树里设置这两个 focused value，.commands 自动读到。
@@ -219,6 +221,7 @@ struct DreamVaultApp: App {
             MainView()
                 .environmentObject(model)
                 .frame(minWidth: 1000, minHeight: 600)
+                .preferredColorScheme(colorScheme.preferredColorScheme)
         }
         .windowResizability(.contentMinSize)
         // P3-T7: Settings scene（独立于 WindowGroup，SwiftUI 自动挂"Preferences…Cmd-,"菜单项）

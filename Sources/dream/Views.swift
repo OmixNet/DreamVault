@@ -9,6 +9,7 @@ struct MainView: View {
     @StateObject private var editorState = EditorState()
     @StateObject private var gitWatcher = GitStatusWatcher()
     @StateObject private var searcher = VaultSearcher()
+    @StateObject private var updateChecker = UpdateChecker()
 
     /// P3-C1: 把 model 和 editorState 写进 FocusedValues，菜单 command 才能读
     var body: some View {
@@ -60,6 +61,19 @@ struct MainView: View {
                 showSearch = false
             }
         }
+        // P6-T3: 启动后 3s 静默检查更新（不打扰）
+        .task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            updateChecker.check()
+        }
+        .safeAreaInset(edge: .top) {
+            if let info = updateChecker.update, info.isUpdateAvailable {
+                UpdateBanner(info: info) {
+                    updateChecker.dismissUpdate()
+                }
+                .transition(.move(edge: .top))
+            }
+        }
         .onAppear {
             gitWatcher.refresh(vaultRoot: model.vaultRoot)
             NotificationCenter.default.addObserver(
@@ -78,6 +92,44 @@ struct MainView: View {
                 gitWatcher.updateDiff(for: f, vaultRoot: model.vaultRoot)
             }
         }
+    }
+}
+
+// MARK: - P6-T3: Update banner
+
+struct UpdateBanner: View {
+    let info: UpdateChecker.UpdateInfo
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.up.circle.fill")
+                .foregroundColor(.accentColor)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("v\(info.latestVersion) 可用（当前 v\(info.currentVersion)）")
+                    .font(.caption).fontWeight(.medium)
+                Text("点击查看 release notes")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Button("View") {
+                NSWorkspace.shared.open(info.releaseURL)
+            }
+            .controlSize(.small)
+            Button {
+                onDismiss()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.accentColor.opacity(0.15))
+        .overlay(Rectangle().frame(height: 1).foregroundColor(.accentColor.opacity(0.3)),
+                 alignment: .bottom)
     }
 }
 

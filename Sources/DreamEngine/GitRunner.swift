@@ -216,7 +216,15 @@ public struct GitRunner {
 
     /// 当前 HEAD 的 commit hash
     public func headHash() throws -> String {
-        try run(["rev-parse", "HEAD"])
+        return try run(["rev-parse", "HEAD"])
+    }
+
+    /// 回滚最近一次 commit。**不能**用于已被 push 的 commit（v0.3 自签名本地使用够用）。
+    /// P5-T1: ConflictResolutionView undo 用
+    public func revertLastCommit() throws -> String {
+        let head = try headHash()
+        try run(Self.identity + ["revert", "--no-edit", head])
+        return try headHash()
     }
 
     /// git status --porcelain 输出（空 = 工作区干净）
