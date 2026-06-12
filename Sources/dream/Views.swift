@@ -12,6 +12,8 @@ struct MainView: View {
     @StateObject private var updateChecker = UpdateChecker()
     /// P7-T1: 首次启动弹 welcome sheet
     @State private var showWelcome: Bool = false
+    /// P2-2: 弹 Knowledge Graph 窗口
+    @State private var showGraph: Bool = false
 
     /// P3-C1: 把 model 和 editorState 写进 FocusedValues，菜单 command 才能读
     var body: some View {
@@ -63,6 +65,18 @@ struct MainView: View {
                 showSearch = false
             }
         }
+        // P2-2: Knowledge Graph 弹窗
+        .sheet(isPresented: $showGraph) {
+            GraphWindow(
+                graph: KnowledgeGraph(memories: model.ledger.memories),
+                memories: model.ledger.memories,
+                onTap: { mem in
+                    model.openMemory(mem)
+                    showGraph = false
+                },
+                onDismiss: { showGraph = false }
+            )
+        }
         // P6-T3: 启动后 3s 静默检查更新（不打扰）
         .task {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -81,6 +95,10 @@ struct MainView: View {
             NotificationCenter.default.addObserver(
                 forName: .showVaultSearch, object: nil, queue: .main
             ) { _ in showSearch = true }
+            // P2-2: 菜单栏 Graph 触发
+            NotificationCenter.default.addObserver(
+                forName: .showKnowledgeGraph, object: nil, queue: .main
+            ) { _ in showGraph = true }
             // P7-T1: first-run welcome
             if FirstRunTracker.shouldShow() {
                 // 0.5s 延迟让主窗先起，避免 sheet 紧贴
