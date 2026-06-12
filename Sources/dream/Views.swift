@@ -293,11 +293,39 @@ struct DreamPanel: View {
                     .keyboardShortcut("d", modifiers: .command)
                     .disabled(model.isRunning)
                     Button(role: .destructive) {
-                        model.rollback()
+                        // P9: 不直接 rollback，先弹确认 dialog（让用户看到 commit msg + 文件数）
+                        model.requestRollback()
                     } label: {
                         Label("Rollback", systemImage: "arrow.uturn.backward")
                     }
                     .disabled(model.isRunning)
+                    .confirmationDialog(
+                        "确认回滚上次的 dream commit？",
+                        isPresented: Binding(
+                            get: { model.rollbackConfirmation != nil },
+                            set: { if !$0 { model.cancelRollback() } }
+                        ),
+                        titleVisibility: .visible
+                    ) {
+                        Button("确认回滚", role: .destructive) {
+                            model.confirmRollback()
+                        }
+                        Button("取消", role: .cancel) {
+                            model.cancelRollback()
+                        }
+                    } message: {
+                        if let c = model.rollbackConfirmation {
+                            Text("""
+                            Commit: \(c.shortHash)
+                            Message: \(c.subject)
+                            Author: \(c.author)
+                            Files: \(c.changedFiles)
+                            Date: \(c.date.formatted(date: .abbreviated, time: .shortened))
+
+                            回滚会生成一个反向 commit 撤销这些改动。
+                            """)
+                        }
+                    }
                     Spacer()
                     Button {
                         model.refreshStatus()

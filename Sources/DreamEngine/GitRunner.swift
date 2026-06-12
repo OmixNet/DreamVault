@@ -279,6 +279,41 @@ public struct GitRunner {
         return try headHash()
     }
 
+    /// P9: 上一次 commit 的 subject（第一行）+ 短 hash + 受影响文件数
+    /// 给 Rollback 确认对话框用，让用户在回滚前看到"会被回滚的内容"
+    public struct LastCommitSummary {
+        public let shortHash: String      // 7-char hash
+        public let subject: String         // commit message 第一行
+        public let fullMessage: String     // 完整 message（含 body）
+        public let author: String          // author name <email>
+        public let date: Date              // 提交时间
+        public let changedFiles: Int       // 受影响文件数
+    }
+    public func lastCommitSummary() throws -> LastCommitSummary {
+        let hash = try run(["log", "-1", "--format=%H"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let short = String(hash.prefix(7))
+        let subject = try run(["log", "-1", "--format=%s"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let fullMsg = try run(["log", "-1", "--format=%B"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let author = try run(["log", "-1", "--format=%an <%ae>"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let dateStr = try run(["log", "-1", "--format=%aI"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        let date = f.date(from: dateStr) ?? Date()
+        // 拿影响文件数（diff --name-only + wc -l，但 git 自带 --numstat 更快）
+        let diffOut = try run(["show", "--name-only", "--format=", hash])
+        let files = diffOut.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return LastCommitSummary(
+            shortHash: short,
+            subject: subject,
+            fullMessage: fullMsg,
+            author: author,
+            date: date,
+            changedFiles: files.count
+        )
+    }
+
     /// git status --porcelain 输出（空 = 工作区干净）
     public func statusPorcelain() throws -> String {
         try run(["status", "--porcelain"])
