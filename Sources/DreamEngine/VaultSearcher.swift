@@ -20,7 +20,7 @@ public final class VaultSearcher: ObservableObject {
 
     public init() {}
 
-    /// 启动搜索（异步）。`mdfind` 在 vault 内找"kMDItemTextContent CONTAINS[cd] '<q>'"。
+    /// 启动搜索（异步）。优先 ripgrep（更快更准），fallback mdfind。
     public func search(vaultRoot: URL) {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else {
@@ -29,12 +29,25 @@ public final class VaultSearcher: ObservableObject {
         }
         isSearching = true
         Task.detached { [vaultRoot, q] in
-            let results = await Self.runMdfind(query: q, vaultRoot: vaultRoot)
+            let results = await Self.runSearch(query: q, vaultRoot: vaultRoot)
             await MainActor.run {
                 self.results = results
                 self.isSearching = false
             }
         }
+    }
+
+    /// P2-6: ripgrep fast-path, mdfind fallback
+    private static func runSearch(query: String, vaultRoot: URL) async -> [SearchResult] {
+        // 1) ripgrep
+        if let hits = RipgrepBridge.search(query: query, root: vaultRoot) {
+            return hits.map { hit in
+                let url = vaultRoot.appendingPathComponent(hit.file)
+                return SearchResult(id: hit.file, path: url, snippet: hit.text)
+            }
+        }
+        // 2) mdfind fallback
+        return await runMdfind(query: query, vaultRoot: vaultRoot)
     }
 
     private static func runMdfind(query: String, vaultRoot: URL) async -> [SearchResult] {
