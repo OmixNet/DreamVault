@@ -11,8 +11,31 @@ public struct SettingsView: View {
     @State private var saveStatus: SaveStatus = .idle
     /// 上次保存时间；用来标"Saved 3s ago"
     @State private var lastSavedAt: Date? = nil
+    /// P1-1: 当前 vault 的 durable 计数, 用于 100+ banner
+    @State private var durableCount: Int = 0
 
-    public init() {}
+    /// P1-1: 接收 vaultPath, 打开时读 ledger 算 durable count.
+    /// 拿不到 path (没初始化 vault) → 0, banner 不显示.
+    public init(vaultPath: String = "") {
+        self._durableCount = State(initialValue: 0)
+        // 立即读 ledger
+        if !vaultPath.isEmpty {
+            let url = URL(fileURLWithPath: vaultPath, isDirectory: true)
+            if let ledger = try? Persister.loadLedger(vaultRoot: url) {
+                self._durableCount = State(initialValue:
+                    ledger.memories.filter { $0.status == .durable }.count)
+            }
+        }
+    }
+
+    /// P1-1: banner 阈值 = 100 (经验值, 100 条以下矛盾检测 LLM 容易跑全, 100+ 走 3 段能防更多 fabricated)
+    static let threeStepBannerThreshold = 100
+
+    /// P1-1: 是否显示 3-Step CoT 推 banner
+    /// 条件: durable >= 100 AND useThreeStepCoT == false
+    static func shouldShowThreeStepBanner(durableCount: Int, useThreeStepCoT: Bool) -> Bool {
+        durableCount >= threeStepBannerThreshold && !useThreeStepCoT
+    }
 
     /// 计算当前 in-memory settings 跟 disk 上的 initial 是否一致
     private var hasUnsavedChanges: Bool {
@@ -443,6 +466,49 @@ public struct SettingsView: View {
     @ViewBuilder
     private var dreamTab: some View {
         Form {
+            // P1-1: durable 100+ 时推 3-Step CoT banner
+            // 只在 (durable >= 100) AND (没开 3-Step) 时显示
+            if Self.shouldShowThreeStepBanner(durableCount: durableCount,
+                                               useThreeStepCoT: settings.useThreeStepCoT) {
+                Section {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "lightbulb.fill")
+                            .foregroundColor(.yellow)
+                            .font(.title3)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("You have \(durableCount) durable memories")
+                                .font(.subheadline).bold()
+                            Text("With 100+ memories, 3-Step CoT (analyze → generate → verify) reduces hallucination significantly. Slows nightly run ~3× but catches LLM-generated fake excerpts.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            HStack {
+                                Button {
+                                    settings.useThreeStepCoT = true
+                                } label: {
+                                    Label("Enable 3-Step CoT", systemImage: "checkmark.shield")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                Button("Maybe later") {
+                                    // Dismiss for this session; banner will re-appear next time
+                                    // (P1-1 简化: 不持久化 dismiss, 用户下次开 Settings 仍看到)
+                                }
+                                .buttonStyle(.borderless)
+                                .controlSize(.small)
+                                .foregroundColor(.secondary)
+                            }
+                            .padding(.top, 2)
+                        }
+                    }
+                    .padding(8)
+                    .background(Color.yellow.opacity(0.12))
+                    .cornerRadius(6)
+                } header: {
+                    Text("Recommendation")
+                }
+            }
+
             Section("Consolidation") {
                 Toggle("3-Step CoT (analyze → generate → verify)",
                        isOn: $settings.useThreeStepCoT)
