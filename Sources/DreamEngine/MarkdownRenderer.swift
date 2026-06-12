@@ -25,13 +25,13 @@ public struct MarkdownRenderer {
 
     /// 主入口：纯 markdown 文本 → NSAttributedString
     public func render(_ markdown: String, baseFontSize: CGFloat = 14) -> NSAttributedString {
-        let blocks = parseBlocks(markdown)
         let result = NSMutableAttributedString()
-        for (idx, block) in blocks.enumerated() {
-            result.append(renderBlock(block, baseFontSize: baseFontSize))
-            if idx < blocks.count - 1 {
-                result.append(NSAttributedString(string: "\n"))
-            }
+        let baseAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: baseFontSize),
+            .foregroundColor: NSColor.labelColor,
+        ]
+        for block in parseBlocks(markdown) {
+            result.append(renderBlock(block, baseFontSize: baseFontSize, baseAttrs: baseAttrs))
         }
         return result
     }
@@ -46,6 +46,8 @@ public struct MarkdownRenderer {
         case listItem(text: String)
         case horizontalRule
         case blank
+        case table(rows: [[String]])        // P3-C2: 第一行 header，后续 body
+        case image(alt: String, src: String)  // P3-C2: ![alt](src)
     }
 
     func parseBlocks(_ markdown: String) -> [Block] {
@@ -93,6 +95,29 @@ public struct MarkdownRenderer {
                 i += 1
                 continue
             }
+            // P3-C2: 图片单行 ![alt](src)
+            if let (alt, src) = parseImageLine(trimmed) {
+                blocks.append(.image(alt: alt, src: src))
+                i += 1
+                continue
+            }
+            // P3-C2: 表格多行 |col|col| + |---|---| 至少 2 行
+            if trimmed.hasPrefix("|") && i + 1 < lines.count {
+                let next = lines[i + 1].trimmingCharacters(in: .whitespaces)
+                if isTableSeparator(next) {
+                    var rows: [[String]] = [parseTableRow(trimmed)]
+                    var j = i + 2
+                    while j < lines.count {
+                        let t = lines[j].trimmingCharacters(in: .whitespaces)
+                        if !t.hasPrefix("|") { break }
+                        rows.append(parseTableRow(t))
+                        j += 1
+                    }
+                    blocks.append(.table(rows: rows))
+                    i = j
+                    continue
+                }
+            }
             // 段落
             var paraLines: [String] = [line]
             i += 1
@@ -122,9 +147,47 @@ public struct MarkdownRenderer {
         return (level, String(rest.dropFirst()))
     }
 
+    // MARK: - P3-C2: 表格 / 图片解析
+
+    /// `![alt text](path/to/img.png)` 一行
+    private func parseImageLine(_ line: String) -> (String, String)? {
+        guard line.hasPrefix("![") else { return nil }
+        guard let closeBracket = line.firstIndex(of: "]"),
+              line[closeBracket...].hasPrefix("]("),
+              let closeParen = line[closeBracket...].firstIndex(of: ")") else { return nil }
+        let alt = String(line[line.index(after: line.startIndex)..<closeBracket])
+        let afterBracket = line.index(after: closeBracket)
+        let src = String(line[line.index(after: afterBracket)..<closeParen])
+        guard !src.isEmpty else { return nil }
+        return (alt, src)
+    }
+
+    /// `|---|---|` 风格的列分隔行
+    private func isTableSeparator(_ line: String) -> Bool {
+        guard line.hasPrefix("|") else { return false }
+        let cells = line.dropFirst().dropLast().split(separator: "|", omittingEmptySubsequences: false)
+        return cells.allSatisfy { cell in
+            let trimmed = cell.trimmingCharacters(in: .whitespaces)
+            // 每个 cell 形如 `---` / `:---` / `---:` / `:---:`
+            return !trimmed.isEmpty &&
+                trimmed.allSatisfy { $0 == "-" || $0 == ":" } &&
+                trimmed.filter { $0 == "-" }.count >= 1
+        }
+    }
+
+    /// `| a | b | c |` → `["a", "b", "c"]`
+    private func parseTableRow(_ line: String) -> [String] {
+        var s = line
+        if s.hasPrefix("|") { s.removeFirst() }
+        if s.hasSuffix("|") { s.removeLast() }
+        return s.split(separator: "|", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
     // MARK: - 块渲染
 
-    private func renderBlock(_ block: Block, baseFontSize: CGFloat) -> NSAttributedString {
+    private func renderBlock(_ block: Block, baseFontSize: CGFloat,
+                             baseAttrs: [NSAttributedString.Key: Any]) -> NSAttributedString {
         switch block {
         case .heading(let level, let text):
             let sizes: [CGFloat] = [0, baseFontSize * 2.0, baseFontSize * 1.6, baseFontSize * 1.3,
@@ -194,7 +257,80 @@ public struct MarkdownRenderer {
 
         case .blank:
             return NSAttributedString(string: "")
+        case .table(let rows):
+            // 简化为 monospace 文本：每列对齐，header 加粗
+            let colCount = rows.map { $0.count }.max() ?? 0
+            guard colCount > 0 else { return NSAttributedString(string: "") }
+            let widths = (0..<colCount).map { col -> Int in
+                rows.map { row in
+                    let idx = col < row.count ? col : 0
+                    return row[idx].count
+                }.max() ?? 8
+            }
+            var out = NSMutableAttributedString()
+            for (ri, row) in rows.enumerated() {
+                var line = ""
+                for ci in 0..<colCount {
+                    let cell = ci < row.count ? row[ci] : ""
+                    let padded = cell.padding(toLength: widths[ci], withPad: " ", startingAt: 0)
+                    line += "| " + padded + " "
+                }
+                line += "|"
+                var attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.monospacedSystemFont(ofSize: baseFontSize * 0.9, weight: .regular),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]
+                if ri == 0 {
+                    attrs[.font] = NSFont.monospacedSystemFont(ofSize: baseFontSize * 0.9, weight: .bold)
+                    attrs[.foregroundColor] = NSColor.labelColor
+                }
+                out.append(NSAttributedString(string: line + "\n", attributes: attrs))
+                if ri == 0 {
+                    let sep = (0..<colCount).map { ci in
+                        String(repeating: "-", count: widths[ci] + 2)
+                    }.joined(separator: "+")
+                    let sepLine = "+" + sep + "+\n"
+                    out.append(NSAttributedString(string: sepLine, attributes: [
+                        .font: NSFont.monospacedSystemFont(ofSize: baseFontSize * 0.9, weight: .regular),
+                        .foregroundColor: NSColor.tertiaryLabelColor
+                    ]))
+                }
+            }
+            return out
+        case .image(let alt, let src):
+            // 解析相对路径 → vault 内的图。当前 renderer 不持有 vaultRoot，
+            // 走 cwd (process 启动目录) 兜底。EditorPane 用法在 vault 内打开文件时
+            // cwd 一般就是 vault root，所以能命中。
+            if let img = loadImage(relativePath: src) {
+                let attachment = NSTextAttachment()
+                attachment.image = img
+                let result = NSMutableAttributedString(attachment: attachment)
+                result.append(NSAttributedString(string: "\n", attributes: baseAttrs))
+                if !alt.isEmpty {
+                    result.append(NSAttributedString(string: "[\(alt)]\n", attributes: [
+                        .foregroundColor: NSColor.secondaryLabelColor,
+                        .font: NSFont.systemFont(ofSize: baseFontSize * 0.85)
+                    ]))
+                }
+                return result
+            }
+            // 加载失败 → 占位符
+            let failText = "[🖼 \(src) — \(alt.isEmpty ? "image" : alt)]\n"
+            return NSAttributedString(string: failText, attributes: [
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .font: NSFont.systemFont(ofSize: baseFontSize)
+            ])
         }
+    }
+
+    /// 加载图片：先当绝对路径，失败再当相对 cwd 路径。
+    private func loadImage(relativePath path: String) -> NSImage? {
+        if let img = NSImage(contentsOfFile: path) { return img }
+        let cwd = FileManager.default.currentDirectoryPath
+        let rel = (path as NSString).expandingTildeInPath
+        if let img = NSImage(contentsOfFile: rel) { return img }
+        if let img = NSImage(contentsOfFile: cwd + "/" + path) { return img }
+        return nil
     }
 
     // MARK: - 行内解析
