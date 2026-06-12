@@ -3,7 +3,15 @@ import Foundation
 // MARK: - DreamConfig：dream 全局配置
 
 /// dream 一次运行的所有可调参数。
-/// 默认值 = 生产推荐（3 段 CoT + 4 路并发）。
+/// 默认值（P8 修正）= **2 步快速路径 + 2 路并发**：
+///   - 适用：本地 Ollama 7B（推荐配置）、mock 调试、CI 跑通。
+///   - 3 段 CoT 默认关闭，4 路并发默认**不**开。
+///   - 想跑 P3 文档里"3 段 + 4 路"那条路径：在 Settings → Dream tab 显式勾选
+///     "3-Step CoT" 并把 concurrency 调到 4。
+///
+///   历史：P3 之前的注释声称"生产推荐 3 段 + 4 路"，但 P3-T2 把默认值改成
+///   `useThreeStepCoT: false, concurrency: 2`（决策 T6：用户偏好 fast + 资源友好），
+///   注释没跟着改。P8 修文档，但**不改默认值**——保持 Settings → Dream 显式开启路径。
 public struct DreamConfig: Sendable {
     public var consolidation: ConsolidationConfig
 
@@ -15,7 +23,8 @@ public struct DreamConfig: Sendable {
     public static let fastDebug = DreamConfig(
         consolidation: ConsolidationConfig(useThreeStepCoT: false, concurrency: 1)
     )
-    /// 生产推荐配置（3 段 CoT + 4 路并发）
+    /// 实际默认：2 步 + 2 路（跟 ConsolidationConfig() 默认值一致）。
+    /// P3 决策 T6：本地 Ollama 7B 资源友好，避免 OOM。
     public static let productionDefault = DreamConfig()
 }
 
@@ -65,6 +74,10 @@ public struct DreamCycle {
         public let reportPath: String?
         public let memoryMdPath: String?
         public let committed: Bool
+        /// P8: 本轮脱敏命中统计。空 = 未启用或没命中。
+        /// 用途：dream-report 末尾写一段，提示用户"今天 N 条 [REDACTED_XXX]"
+        /// 让用户能发现"CN_ID_CARD 误伤长数字串"这类规则问题。
+        public let redactionCounts: [String: Int]
         public var nothingToDo: Bool { gatheredCount == 0 && acceptedCount == 0 }
     }
 
@@ -206,6 +219,7 @@ public struct DreamCycle {
             decayResults: decayResults,
             newlyAccepted: newAccepted,
             gatheredFiles: gathered.gatheredFiles,
+            redactionCounts: gathered.redactionCounts,  // P8: 让 dream-report 显示命中统计
             now: now
         )
 
@@ -236,7 +250,8 @@ public struct DreamCycle {
             needsReviewCount: outcome.needsReviewIDs.count,
             reportPath: outcome.reportPath,
             memoryMdPath: outcome.memoryMdPath,
-            committed: outcome.committed
+            committed: outcome.committed,
+            redactionCounts: gathered.redactionCounts
         )
     }
 
