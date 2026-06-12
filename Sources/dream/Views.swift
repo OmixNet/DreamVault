@@ -16,6 +16,9 @@ struct MainView: View {
     @State private var showGraph: Bool = false
     /// P2-3: 弹 Insert Wikilink 输入框
     @State private var showInsertWikilink: Bool = false
+    /// P2-4: 偶然唤回 banner
+    @State private var serendipityPick: SerendipityPick? = nil
+    @State private var serendipityDismissed: Bool = false
 
     /// P3-C1: 把 model 和 editorState 写进 FocusedValues，菜单 command 才能读
     var body: some View {
@@ -100,11 +103,27 @@ struct MainView: View {
             updateChecker.check()
         }
         .safeAreaInset(edge: .top) {
-            if let info = updateChecker.update, info.isUpdateAvailable {
-                UpdateBanner(info: info) {
-                    updateChecker.dismissUpdate()
+            VStack(spacing: 0) {
+                if let info = updateChecker.update, info.isUpdateAvailable {
+                    UpdateBanner(info: info) {
+                        updateChecker.dismissUpdate()
+                    }
+                    .transition(.move(edge: .top))
                 }
-                .transition(.move(edge: .top))
+                // P2-4: 偶然唤回 banner (未 dismiss 时)
+                if let pick = serendipityPick, !serendipityDismissed {
+                    SerendipityBanner(
+                        pick: pick,
+                        onOpen: { mem in
+                            model.openMemory(mem)
+                            serendipityDismissed = true
+                        },
+                        onDismiss: { serendipityDismissed = true }
+                    )
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 4)
+                    .transition(.move(edge: .top))
+                }
             }
         }
         .onAppear {
@@ -121,6 +140,10 @@ struct MainView: View {
                 forName: .showInsertWikilink, object: nil, queue: .main
             ) { _ in showInsertWikilink = true }
             // P7-T1: first-run welcome
+            // P2-4: 偶然唤回 — vault 启动时挑 1 条 30+ 天没看的 durable
+            if serendipityPick == nil {
+                serendipityPick = SerendipitySelector.pick(from: model.ledger.memories)
+            }
             if FirstRunTracker.shouldShow() {
                 // 0.5s 延迟让主窗先起，避免 sheet 紧贴
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
