@@ -248,6 +248,10 @@ struct DreamVaultApp: App {
                 .environmentObject(model)
                 .frame(minWidth: 1000, minHeight: 600)
                 .preferredColorScheme(colorScheme.preferredColorScheme)
+                .onAppear {
+                    // P2-1: 启动时把 AppModel 注入菜单栏 (idempotent, 多次调安全)
+                    MenuBarController.shared.start(model: model)
+                }
         }
         .windowResizability(.contentMinSize)
         // P3-T7: Settings scene（独立于 WindowGroup，SwiftUI 自动挂"Preferences…Cmd-,"菜单项）
@@ -372,6 +376,18 @@ enum AppActions {
     }
 
     /// NSOpenPanel 选 vault 目录
+    /// P2-1: 菜单栏 Search… — 复用 SearchSheet (通过 Notification 触发)
+    static func openSearch(model: AppModel) {
+        NotificationCenter.default.post(name: .showVaultSearch, object: nil)
+    }
+
+    /// P2-1: 菜单栏 Recent Memory — 跳到该记忆的源文件并打开编辑器
+    static func openMemory(_ mem: Memory, model: AppModel) {
+        guard let first = mem.sources.first else { return }
+        let url = model.vaultRoot.appendingPathComponent(first.file)
+        model.selectedFile = url
+    }
+
     static func openVault(model: AppModel) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -696,6 +712,13 @@ public final class AppModel: ObservableObject {
     }
 
     /// GUI 内的 Run Dream。直接调 DreamCycle，不开子进程
+    /// P2-1: 菜单栏 Recent Memory 点击 — 跳到该记忆的源文件
+    func openMemory(_ mem: Memory) {
+        guard let first = mem.sources.first else { return }
+        let url = vaultRoot.appendingPathComponent(first.file)
+        selectedFile = url
+    }
+
     func runDream() async {
         guard !isRunning else { return }
         isRunning = true
@@ -785,6 +808,16 @@ public final class AppModel: ObservableObject {
             reportPath = outcome.reportPath
             logLines.append("gathered=\(outcome.gatheredCount) accepted=\(outcome.acceptedCount) committed=\(outcome.committed)")
             refreshStatus()
+            // P2-1: dream 跑完发通知 + 切 hasNew
+            let topExcerpt = (try? ledger.memories
+                .filter { $0.status == .durable }
+                .sorted { $0.lastAccess > $1.lastAccess }
+                .first?.text) ?? nil
+            MenuBarController.shared.notifyDreamFinished(
+                accepted: outcome.acceptedCount,
+                archived: outcome.archivedCount,
+                topExcerpt: topExcerpt
+            )
         } catch let e as DreamCycle.DreamError {
             // P8: 撞上 userDirtyWorkspace，按用户策略决定 auto-commit / 报错 / 弹窗
             if case .userDirtyWorkspace = e {
