@@ -145,6 +145,14 @@ public final class MenuBarController: NSObject, NSMenuDelegate, UNUserNotificati
         search.keyEquivalentModifierMask = [.command, .shift]
         menu.addItem(search)
 
+        // 4b. P2-2: Knowledge Graph
+        let graph = NSMenuItem(title: "Knowledge Graph…",
+                               action: #selector(menuGraph),
+                               keyEquivalent: "g")
+        graph.target = self
+        graph.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(graph)
+
         menu.addItem(.separator())
 
         // 5. Settings…
@@ -185,6 +193,11 @@ public final class MenuBarController: NSObject, NSMenuDelegate, UNUserNotificati
         // P6: search 升级未做, 先弹 SearchSheet
         guard let m = model else { return }
         AppActions.openSearch(model: m)
+    }
+
+    @objc private func menuGraph() {
+        guard let m = model else { return }
+        AppActions.openGraph(model: m)
     }
 
     @objc private func menuSettings() {

@@ -351,6 +351,8 @@ struct DreamVaultApp: App {
 // P3-T8: Search sheet 触发通知
 extension Notification.Name {
     public static let showVaultSearch = Notification.Name("com.OmixNet.dreamvault.showSearch")
+    /// P2-2: 弹 Knowledge Graph 窗口
+    public static let showKnowledgeGraph = Notification.Name("com.OmixNet.dreamvault.showGraph")
     // P9 P0-4: 菜单 Import → 触发 VaultBrowser 弹 NSOpenPanel
     public static let dreamVaultImportToRaw = Notification.Name("com.OmixNet.dreamvault.importToRaw")
 }
@@ -379,6 +381,11 @@ enum AppActions {
     /// P2-1: 菜单栏 Search… — 复用 SearchSheet (通过 Notification 触发)
     static func openSearch(model: AppModel) {
         NotificationCenter.default.post(name: .showVaultSearch, object: nil)
+    }
+
+    /// P2-2: 菜单栏 Knowledge Graph — 弹 GraphWindow
+    static func openGraph(model: AppModel) {
+        NotificationCenter.default.post(name: .showKnowledgeGraph, object: nil)
     }
 
     /// P2-1: 菜单栏 Recent Memory — 跳到该记忆的源文件并打开编辑器
