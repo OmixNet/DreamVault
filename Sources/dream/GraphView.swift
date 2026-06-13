@@ -27,10 +27,6 @@ public struct GraphRenderer: View {
     @Binding public var hoveredID: String?
     public let onTap: (String) -> Void
 
-    /// P2-2: 缓存 layout 结果 (避免重算). 失效条件: nodes/edges count 变化
-    @State private var layoutCache: [String: CGPoint] = [:]
-    @State private var cacheKey: String = ""
-
     public init(nodes: [GraphNodeVisual],
                 edges: [GraphEdge],
                 area: CGSize,
@@ -46,25 +42,16 @@ public struct GraphRenderer: View {
     }
 
     public var body: some View {
-        Canvas { ctx, size in
-            // 第一次渲染或失效时重算 layout
-            let key = "\(nodes.count)|\(edges.count)|\(Int(size.width))x\(Int(size.height))"
-            if key != cacheKey {
-                let nodeIDs = nodes.map { $0.id }
-                layoutCache = ForceLayout.layout(
-                    nodes: nodeIDs,
-                    edges: edges,
-                    area: size
-                )
-                cacheKey = key
-            }
-            let pos = layoutCache
-            // 建 node 字典, 加速查找
-            let nodeByID = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
+        let positions = ForceLayout.layout(
+            nodes: nodes.map { $0.id },
+            edges: edges,
+            area: area
+        )
 
+        Canvas { ctx, _ in
             // 边
             for edge in edges {
-                guard let pu = pos[edge.u], let pv = pos[edge.v] else { continue }
+                guard let pu = positions[edge.u], let pv = positions[edge.v] else { continue }
                 let highlight: Color = {
                     if let sel = selectedID, (sel == edge.u || sel == edge.v) {
                         return .blue
@@ -82,7 +69,7 @@ public struct GraphRenderer: View {
 
             // 节点
             for node in nodes {
-                guard let p = pos[node.id] else { continue }
+                guard let p = positions[node.id] else { continue }
                 let r = node.size
                 let rect = CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)
                 let dim: Color = {
@@ -112,7 +99,7 @@ public struct GraphRenderer: View {
                 .onEnded { value in
                     // hit-test: 找最近的节点
                     let p = value.location
-                    if let hit = hitTest(point: p) {
+                    if let hit = hitTest(point: p, positions: positions) {
                         onTap(hit)
                     }
                 }
@@ -120,7 +107,7 @@ public struct GraphRenderer: View {
         .onContinuousHover { phase in
             switch phase {
             case .active(let location):
-                hoveredID = hitTest(point: location)
+                hoveredID = hitTest(point: location, positions: positions)
             case .ended:
                 hoveredID = nil
             }
@@ -128,10 +115,10 @@ public struct GraphRenderer: View {
     }
 
     /// 找离 point 最近的节点 (返回 nil if 距离 > 30pt)
-    private func hitTest(point: CGPoint) -> String? {
+    private func hitTest(point: CGPoint, positions: [String: CGPoint]) -> String? {
         var bestID: String? = nil
         var bestDist: CGFloat = 30  // hit radius
-        for (id, p) in layoutCache {
+        for (id, p) in positions {
             let dx = p.x - point.x
             let dy = p.y - point.y
             let d = sqrt(dx * dx + dy * dy)

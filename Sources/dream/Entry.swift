@@ -427,6 +427,14 @@ enum AppActions {
         panel.allowedContentTypes = [.init(filenameExtension: "md")].compactMap { $0 }
         panel.directoryURL = model.vaultRoot
         if panel.runModal() == .OK, let url = panel.url {
+            guard EditorState.isDescendant(url, of: model.vaultRoot) else {
+                let alert = NSAlert()
+                alert.messageText = "File Outside Vault"
+                alert.informativeText = "Choose a Markdown file inside the current DreamVault folder."
+                alert.alertStyle = .warning
+                alert.runModal()
+                return
+            }
             model.selectedFile = url
         }
     }
@@ -744,13 +752,12 @@ public final class AppModel: ObservableObject {
             // P4-T2: 改用 ResolvedDreamRuntimeConfig 5 层 priority merge
             // （CLI / vault config / UserDefaults / env / default）
             // 替代 GlobalOptions().llmProvider() 单层 env 路径
-            let resolved = ResolvedDreamRuntimeConfig.resolve(
-                settings: DreamSettings.load()
-            )
+            let runtime = try await GlobalOptions(vault: vaultRoot.path).runtimeContext()
+            let resolved = runtime.resolved
             logLines.append("config: provider=\(resolved.llm.provider.rawValue) model=\(resolved.llm.model) 3Step=\(resolved.consolidation.useThreeStepCoT) conc=\(resolved.consolidation.concurrency)")
 
             // P4-T4: budget 检查
-            let budget = BudgetManager(config: resolved.budget, vaultRoot: vaultRoot)
+            let budget = runtime.budgetManager
             guard budget.canProceed() else {
                 throw DreamCycle.DreamError.consolidateFailed(underlying:
                     NSError(domain: "Budget", code: 1,
@@ -758,55 +765,12 @@ public final class AppModel: ObservableObject {
                             "LLM 预算已耗尽（今日 \(budget.todayCount) 次 / $\(String(format: "%.2f", budget.monthCost))）。调大 Budget 或等明天。"]))
             }
 
-            // P4-T3: 从 Keychain 取 API key
-            let apiKey: String? = resolved.llm.keychainItem.flatMap { Keychain.loadIfPresent(itemName: $0) }
-            let baseLLM: LLMProvider
-            switch resolved.llm.provider {
-            case .mock:
-                baseLLM = MockLLMProvider()
-            case .ollama:
-                baseLLM = OllamaProvider(baseURL: resolved.llm.baseURL, model: resolved.llm.model)
-            case .openaiCompat:
-                baseLLM = OllamaProvider(baseURL: resolved.llm.baseURL, model: resolved.llm.model, apiKey: apiKey)
-            }
-            // P8: 包一层 BudgetedLLMProvider，让 LLM 调用真实记录到 budget
-            let providerName: String = {
-                switch resolved.llm.provider {
-                case .mock: return "mock"
-                case .ollama: return "ollama"
-                case .openaiCompat: return "openai-compat"
-                }
-            }()
-            let canProceedFn: @Sendable (_ estOutTok: Int, _ modelHint: String) async -> Bool = { estOutTok, modelHint in
-                await MainActor.run { budget.canProceed(estimatedOutputTokens: estOutTok, modelHint: modelHint) }
-            }
-            let recordCallFn: @Sendable (String, String, Int, Int) async -> Void = { p, m, i, o in
-                await MainActor.run {
-                    budget.recordCall(provider: p, model: m, inputTokens: i, outputTokens: o)
-                }
-            }
-            let llm: LLMProvider = BudgetedLLMProvider(
-                wrapping: baseLLM,
-                providerName: providerName,
-                canProceedFn: canProceedFn,
-                recordCallFn: recordCallFn
-            )
-
-            // P4-T2: 把 resolved 整段传 DreamCycle（DecayConfig 用 resolved.decay）
-            // P4-T2: consolidation config 来自 resolved
-            let consolidationConfig = ConsolidationConfig(
-                useThreeStepCoT: resolved.consolidation.useThreeStepCoT,
-                concurrency: resolved.consolidation.concurrency
-            )
-            // 替换 Decayer 默认
-            // （暂用 DecayConfig 默认；后续 v0.4 接 resolved.decay 全部）
-
             let git = GitRunner(repoRoot: vaultRoot)
             let cycle = DreamCycle(
                 vaultRoot: vaultRoot,
-                llm: llm,
+                llm: runtime.provider,
                 git: git,
-                config: DreamConfig(consolidation: consolidationConfig)
+                config: runtime.dreamConfig
             )
             let outcome = try await cycle.runOnce { [weak self] event in
                 Task { @MainActor in
@@ -823,10 +787,10 @@ public final class AppModel: ObservableObject {
             logLines.append("gathered=\(outcome.gatheredCount) accepted=\(outcome.acceptedCount) committed=\(outcome.committed)")
             refreshStatus()
             // P2-1: dream 跑完发通知 + 切 hasNew
-            let topExcerpt = (try? ledger.memories
+            let topExcerpt = ledger.memories
                 .filter { $0.status == .durable }
                 .sorted { $0.lastAccess > $1.lastAccess }
-                .first?.text) ?? nil
+                .first?.text
             MenuBarController.shared.notifyDreamFinished(
                 accepted: outcome.acceptedCount,
                 archived: outcome.archivedCount,

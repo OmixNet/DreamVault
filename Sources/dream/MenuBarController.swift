@@ -21,7 +21,7 @@ import DreamEngine
 ///
 /// 通知: dream 跑完时 AppModel 调 `notifyDreamFinished(accepted:)` 发本地通知.
 @MainActor
-public final class MenuBarController: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
+public final class MenuBarController: NSObject, NSMenuDelegate, @preconcurrency UNUserNotificationCenterDelegate {
     /// 单例 (P2-1: 菜单栏只一个 status item)
     public static let shared = MenuBarController()
 
@@ -253,6 +253,11 @@ public final class MenuBarController: NSObject, NSMenuDelegate, UNUserNotificati
         return "\(prefix)\nTap to open vault"
     }
 
+    /// P2-1: app 在前台时本地通知仍然给用户明确反馈。
+    public static func foregroundNotificationOptions() -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+
     /// P2-1: Recent Memory 菜单项 title 截断 (logic-only)
     public static func recentMemoryMenuTitle(_ text: String, maxLen: Int = 60) -> String {
         if text.count > maxLen {
@@ -332,7 +337,7 @@ public final class MenuBarController: NSObject, NSMenuDelegate, UNUserNotificati
                                        withCompletionHandler completionHandler:
                                        @escaping (UNNotificationPresentationOptions) -> Void) {
         // banner + sound (即使 app 在前台也弹)
-        completionHandler([.banner, .sound])
+        completionHandler(Self.foregroundNotificationOptions())
     }
 
     public func userNotificationCenter(_ center: UNUserNotificationCenter,

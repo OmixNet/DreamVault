@@ -35,6 +35,8 @@ public final class EditorState: ObservableObject {
             installAutosavePipeline()
         }
     }
+    /// 当前 vault 根目录。设置后 raw/ 与可编辑性判断都按 vault-relative 规则执行。
+    public var vaultRoot: URL? = nil
 
     private var lastSavedSnapshot: String = ""
     private var debounceSubject = PassthroughSubject<String, Never>()
@@ -45,6 +47,13 @@ public final class EditorState: ObservableObject {
 
     public init() {
         installAutosavePipeline()
+    }
+
+    deinit {
+        if let ncObserver {
+            NotificationCenter.default.removeObserver(ncObserver)
+        }
+        debounceCancellable?.cancel()
     }
 
     private func installAutosavePipeline() {
@@ -83,6 +92,9 @@ public final class EditorState: ObservableObject {
     @discardableResult
     public func openFile(_ url: URL) -> Bool {
         guard flushIfDirty() else { return false }
+        if let vaultRoot, !Self.isDescendant(url, of: vaultRoot) {
+            return false
+        }
         do {
             let content = try String(contentsOf: url, encoding: .utf8)
             self.currentFile = url
@@ -170,12 +182,29 @@ public final class EditorState: ObservableObject {
     }
 
     public func isRaw(_ url: URL) -> Bool {
-        url.path.contains("/raw/")
+        if let vaultRoot {
+            let rawRoot = vaultRoot
+                .standardizedFileURL
+                .appendingPathComponent("raw", isDirectory: true)
+                .path
+            let path = url.standardizedFileURL.path
+            return path == rawRoot || path.hasPrefix(rawRoot + "/")
+        }
+        return url.path.contains("/raw/")
     }
 
     /// raw 文件是否可编辑（永远 false — arch doc 0.1 raw 永远只读）
     public func isEditable(_ url: URL?) -> Bool {
         guard let url else { return false }
+        if let vaultRoot, !Self.isDescendant(url, of: vaultRoot) {
+            return false
+        }
         return !isRaw(url)
+    }
+
+    public static func isDescendant(_ url: URL, of root: URL) -> Bool {
+        let rootPath = root.standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        return path == rootPath || path.hasPrefix(rootPath + "/")
     }
 }

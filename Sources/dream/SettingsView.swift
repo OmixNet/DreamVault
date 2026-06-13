@@ -21,10 +21,9 @@ public struct SettingsView: View {
         // 立即读 ledger
         if !vaultPath.isEmpty {
             let url = URL(fileURLWithPath: vaultPath, isDirectory: true)
-            if let ledger = try? Persister.loadLedger(vaultRoot: url) {
-                self._durableCount = State(initialValue:
-                    ledger.memories.filter { $0.status == .durable }.count)
-            }
+            let ledger = Persister.loadLedger(vaultRoot: url)
+            self._durableCount = State(initialValue:
+                ledger.memories.filter { $0.status == .durable }.count)
         }
     }
 
@@ -120,21 +119,17 @@ public struct SettingsView: View {
 
     /// 保存到 UserDefaults + 更新 initial 快照
     private func applySettings() {
-        do {
-            settings.save()
-            initialSettings = settings
-            lastSavedAt = Date()
-            saveStatus = .saved(lastSavedAt!)
-            // 2s 后 idle
-            let savedAt = lastSavedAt!
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                if let current = lastSavedAt, current == savedAt {
-                    saveStatus = .idle
-                }
+        settings.save()
+        initialSettings = settings
+        lastSavedAt = Date()
+        saveStatus = .saved(lastSavedAt!)
+        // 2s 后 idle
+        let savedAt = lastSavedAt!
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if let current = lastSavedAt, current == savedAt {
+                saveStatus = .idle
             }
-        } catch {
-            saveStatus = .error(error.localizedDescription)
         }
     }
 
@@ -190,8 +185,11 @@ public struct SettingsView: View {
                     .onChange(of: settings.nightlyDreamEnabled) { _ in
                         // P3-T9 钩子：调 SMAppService / launchd
                         // 当前实现：写 log；真实注册留给 follow-up commit
-                        NightlyDreamScheduler.shared
+                        let status = NightlyDreamScheduler.shared
                             .setEnabled(settings.nightlyDreamEnabled, vaultPath: settings.vaultPath)
+                        if let error = status.lastError {
+                            saveStatus = .error(error)
+                        }
                     }
                 Text("启用后会注册一个 launchd job 每天 3:00 跑 dream run。")
                     .font(.caption)

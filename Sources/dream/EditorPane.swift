@@ -49,16 +49,18 @@ public struct EditorPane: View {
     // MARK: - 视图
 
     private var placeholder: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 48))
+                .font(.system(size: 42))
                 .foregroundColor(.secondary)
-            Text("选个文件开始看")
-                .font(.title3)
-                .foregroundColor(.secondary)
-            Text("左侧是 vault 文件树")
-                .font(.caption)
-                .foregroundColor(.secondary)
+            VStack(spacing: 4) {
+                Text("Select a note")
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                Text("Choose a raw capture or wiki note from the sidebar.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -76,31 +78,45 @@ public struct EditorPane: View {
 
     @ViewBuilder
     private func header(url: URL, editable: Bool, effectiveMode: EditorState.EditorMode) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: editable ? "pencil" : "lock.fill")
-                .foregroundColor(editable ? .accentColor : .orange)
-            Text(url.lastPathComponent)
-                .font(.headline)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            if !editable {
-                Text("READ-ONLY")
-                    .font(.caption2)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Color.orange.opacity(0.2))
-                    .cornerRadius(4)
-            } else if state.isDirty {
-                Text("• 未保存")
-                    .font(.caption2)
-                    .foregroundColor(.orange)
-            } else {
-                Text("已保存")
+        let relPath = FrontendPresentation.relativePath(of: url, vaultRoot: model.vaultRoot)
+        let title = FrontendPresentation.documentTitle(relPath: relPath, body: state.buffer)
+        let kind = FrontendPresentation.documentKindLabel(relPath: relPath)
+        let status = FrontendPresentation.documentSaveStatus(isEditable: editable, isDirty: state.isDirty)
+        let statusIcon = FrontendPresentation.documentStatusSystemImage(isEditable: editable, isDirty: state.isDirty)
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(kind)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+                }
+                Text(relPath)
                     .font(.caption2)
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
+
             Spacer()
+
+            Label(status, systemImage: statusIcon)
+                .font(.caption)
+                .foregroundColor(documentStatusColor(editable: editable))
+
             modePicker(url: url, effectiveMode: effectiveMode)
-            Button("Save") { state.saveNow() }
+
+            Button {
+                state.saveNow()
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+            }
                 .disabled(!editable || !state.isDirty)
                 .keyboardShortcut("s", modifiers: .command)
                 .help("Cmd-S 显式保存")
@@ -108,6 +124,11 @@ public struct EditorPane: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(.bar)
+    }
+
+    private func documentStatusColor(editable: Bool) -> Color {
+        if !editable { return .secondary }
+        return state.isDirty ? .orange : .secondary
     }
 
     @ViewBuilder
@@ -171,13 +192,16 @@ public struct EditorPane: View {
                     Text(attr)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
+                        .padding(.horizontal, 28)
+                        .padding(.vertical, 24)
                 } else {
                     Text("（无内容预览）")
                         .foregroundColor(.secondary)
-                        .padding(12)
+                        .padding(24)
                 }
             }
+            .frame(maxWidth: 860, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(Color(NSColor.textBackgroundColor))
         // P2-A2: 拦截 dreamvault://wikilink/<id> 的点击，

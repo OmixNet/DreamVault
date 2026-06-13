@@ -9,9 +9,10 @@ public struct SearchSheet: View {
     let onDismiss: () -> Void
     @State private var input: String = ""
 
-    init(searcher: VaultSearcher, model: AppModel, onDismiss: @escaping () -> Void) {
+    init(searcher: VaultSearcher, model: AppModel, initialQuery: String = "", onDismiss: @escaping () -> Void) {
         self.searcher = searcher
         self.model = model
+        self._input = State(initialValue: initialQuery)
         self.onDismiss = onDismiss
     }
 
@@ -27,6 +28,13 @@ public struct SearchSheet: View {
                 if searcher.isSearching {
                     ProgressView().controlSize(.small)
                 }
+                Button {
+                    runSearch()
+                } label: {
+                    Label("Search", systemImage: "magnifyingglass")
+                }
+                .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.defaultAction)
                 Button("Close") { onDismiss() }
                     .keyboardShortcut(.cancelAction)
             }
@@ -55,14 +63,33 @@ public struct SearchSheet: View {
                         }
                         onDismiss()
                     } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(r.id)
-                                .font(.caption)
-                                .fontWeight(.medium)
-                            Text(r.snippet)
-                                .font(.system(.caption2, design: .monospaced))
+                        let body = try? String(contentsOf: r.path, encoding: .utf8)
+                        let title = FrontendPresentation.searchResultTitle(relPath: r.id, body: body)
+                        let subtitle = FrontendPresentation.searchResultSubtitle(relPath: r.id)
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "doc.text.magnifyingglass")
                                 .foregroundColor(.secondary)
-                                .lineLimit(2)
+                                .frame(width: 16)
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 6) {
+                                    Text(title)
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    if let subtitle, subtitle != title {
+                                        Text(subtitle)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                }
+                                Text(r.snippet)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(2)
+                            }
                         }
                     }
                     .buttonStyle(.plain)
@@ -83,6 +110,11 @@ public struct SearchSheet: View {
             .padding(.vertical, 4)
         }
         .frame(width: 560, height: 400)
+        .onAppear {
+            if !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                runSearch()
+            }
+        }
     }
 
     private func runSearch() {

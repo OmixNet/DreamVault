@@ -259,9 +259,7 @@ public struct FrontmatterInspector: View {
     private func rebuildBuffer(original: String, newDoc: FrontmatterParser.Document) -> String {
         let lines = original.components(separatedBy: "\n")
         var bodyStartLine = 1  // 1-based
-        var hasFrontmatter = false
         if lines.first?.trimmingCharacters(in: .whitespaces) == "---" {
-            hasFrontmatter = true
             // 找闭合 ---
             for i in 1..<lines.count {
                 if lines[i].trimmingCharacters(in: .whitespaces) == "---" {

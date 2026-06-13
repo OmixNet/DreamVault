@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import DreamEngine
 
 // MARK: - MainView（3 栏 NavigationSplitView）
@@ -10,6 +11,9 @@ struct MainView: View {
     @StateObject private var gitWatcher = GitStatusWatcher()
     @StateObject private var searcher = VaultSearcher()
     @StateObject private var updateChecker = UpdateChecker()
+    @SceneStorage("DreamVault.MainView.showInspector") private var showInspector: Bool = true
+    @SceneStorage("DreamVault.MainView.searchText") private var vaultSearchText: String = ""
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     /// P7-T1: 首次启动弹 welcome sheet
     @State private var showWelcome: Bool = false
     /// P2-2: 弹 Knowledge Graph 窗口
@@ -31,7 +35,7 @@ struct MainView: View {
 
     @ViewBuilder
     private var content: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             VaultBrowser()
                 .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 400)
         } content: {
@@ -41,32 +45,71 @@ struct MainView: View {
             }
             .navigationSplitViewColumnWidth(min: 400, ideal: 600)
         } detail: {
-            HSplitView {
-                FrontmatterInspector(state: editorState)
-                    .frame(minWidth: 260, idealWidth: 300, maxWidth: 400)
-                DreamPanel(editorState: editorState)
-                    .frame(minWidth: 280, idealWidth: 340, maxWidth: 500)
+            if showInspector {
+                HSplitView {
+                    FrontmatterInspector(state: editorState)
+                        .frame(minWidth: 260, idealWidth: 300, maxWidth: 400)
+                    DreamPanel(editorState: editorState)
+                        .frame(minWidth: 300, idealWidth: 360, maxWidth: 520)
+                }
+            } else {
+                InspectorHiddenPlaceholder {
+                    showInspector = true
+                    columnVisibility = .all
+                }
             }
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
-                Text(model.vaultRoot.path)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
+                VaultTitleView(
+                    title: FrontendPresentation.vaultDisplayName(path: model.vaultRoot.path),
+                    subtitle: FrontendPresentation.vaultSubtitle(path: model.vaultRoot.path)
+                )
             }
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button {
-                    showSearch.toggle()
+                    runDreamFromToolbar()
+                } label: {
+                    Label("Run", systemImage: "play.fill")
+                }
+                .help("Run Dream (Cmd-D)")
+                .disabled(model.isRunning)
+
+                Button {
+                    NotificationCenter.default.post(name: .dreamVaultImportToRaw, object: nil)
+                } label: {
+                    Image(systemName: "square.and.arrow.down")
+                }
+                .help("Import files to raw/ (Cmd-I)")
+
+                Button {
+                    showGraph = true
+                } label: {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                }
+                .help("Open Knowledge Graph")
+
+                Button {
+                    openSearch()
                 } label: {
                     Image(systemName: "magnifyingglass")
                 }
                 .help("Search vault (Cmd-Shift-F)")
+
+                Button {
+                    toggleInspector()
+                } label: {
+                    Image(systemName: showInspector ? "sidebar.right" : "sidebar.right")
+                }
+                .help(showInspector ? "Hide inspector" : "Show inspector")
             }
         }
+        .searchable(text: $vaultSearchText, prompt: "Search Vault")
+        .onSubmit(of: .search) {
+            openSearch(query: vaultSearchText)
+        }
         .sheet(isPresented: $showSearch) {
-            SearchSheet(searcher: searcher, model: model) {
+            SearchSheet(searcher: searcher, model: model, initialQuery: vaultSearchText) {
                 showSearch = false
             }
         }
@@ -127,10 +170,12 @@ struct MainView: View {
             }
         }
         .onAppear {
+            columnVisibility = showInspector ? .all : .doubleColumn
+            editorState.vaultRoot = model.vaultRoot
             gitWatcher.refresh(vaultRoot: model.vaultRoot)
             NotificationCenter.default.addObserver(
                 forName: .showVaultSearch, object: nil, queue: .main
-            ) { _ in showSearch = true }
+            ) { _ in openSearch() }
             // P2-2: 菜单栏 Graph 触发
             NotificationCenter.default.addObserver(
                 forName: .showKnowledgeGraph, object: nil, queue: .main
@@ -153,7 +198,11 @@ struct MainView: View {
         }
         .onChange(of: model.vaultRoot) { _ in
             // 用户手动换 vault 后重置 welcome（让他重选 LLM 适配新 vault）
+            editorState.vaultRoot = model.vaultRoot
             FirstRunTracker.reset()
+        }
+        .onChange(of: showInspector) { newValue in
+            columnVisibility = newValue ? .all : .doubleColumn
         }
         .sheet(isPresented: $showWelcome) {
             FirstRunWelcomeView { _ in
@@ -175,6 +224,65 @@ struct MainView: View {
                 gitWatcher.updateDiff(for: f, vaultRoot: model.vaultRoot)
             }
         }
+    }
+
+    private func openSearch(query: String? = nil) {
+        if let query {
+            vaultSearchText = query
+        }
+        showSearch = true
+    }
+
+    private func runDreamFromToolbar() {
+        _ = editorState.flushIfDirty()
+        Task { await model.runDream() }
+    }
+
+    private func toggleInspector() {
+        showInspector.toggle()
+        columnVisibility = showInspector ? .all : .doubleColumn
+    }
+}
+
+private struct VaultTitleView: View {
+    let title: String
+    let subtitle: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title)
+                .font(.headline)
+                .lineLimit(1)
+            Text(subtitle)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .help(subtitle)
+        .frame(maxWidth: 280, alignment: .leading)
+    }
+}
+
+private struct InspectorHiddenPlaceholder: View {
+    let onShow: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "sidebar.right")
+                .font(.system(size: 28))
+                .foregroundColor(.secondary)
+            Text("Inspector Hidden")
+                .font(.headline)
+            Button {
+                onShow()
+            } label: {
+                Label("Show Inspector", systemImage: "sidebar.right")
+            }
+            .controlSize(.small)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .foregroundColor(.secondary)
     }
 }
 
@@ -246,6 +354,14 @@ struct VaultBrowser: View {
                 // 既然 "扔文件进来" 是产品承诺，raw/ section 底部给一个明显的入口
                 importHintRow
             }
+            let notes = notesFiles()
+            if !notes.isEmpty {
+                Section("notes/  (\(notes.count) 可编辑)") {
+                    ForEach(notes, id: \.self) { url in
+                        fileRow(url: url, system: "square.and.pencil", tint: .green)
+                    }
+                }
+            }
             ForEach(wikiSections) { section in
                 let files = wikiFiles(under: section.rel)
                 DisclosureGroup(
@@ -315,6 +431,7 @@ struct VaultBrowser: View {
     struct ImportResultBanner: Identifiable, Equatable {
         let id = UUID()
         let succeeded: Int
+        let editable: Int
         let skipped: Int
         let failed: Int
     }
@@ -333,11 +450,11 @@ struct VaultBrowser: View {
             }
         }
         .buttonStyle(.plain)
-        .help("导入到 raw/")
+        .help("导入到 raw/；Markdown 会同时创建 notes/ 可编辑副本")
         // 浮动的导入结果反馈
         .overlay(alignment: .bottom) {
             if let banner = importResultBanner {
-                Text("✓ 导入 \(banner.succeeded) 跳过 \(banner.skipped) 失败 \(banner.failed)")
+                Text("✓ 导入 \(banner.succeeded) 可编辑 \(banner.editable) 跳过 \(banner.skipped) 失败 \(banner.failed)")
                     .font(.caption2)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -378,14 +495,22 @@ struct VaultBrowser: View {
         let result = RawImporter.importToRaw(sourceURLs: urls, vaultRoot: model.vaultRoot)
         withAnimation { importResultBanner = ImportResultBanner(
             succeeded: result.succeeded.count,
+            editable: result.editableCopies.count,
             skipped: result.skipped.count,
             failed: result.failed.count
         ) }
+        if let firstEditable = result.editableCopies.first {
+            model.selectedFile = firstEditable
+        }
         model.refreshStatus()
         // stderr 留痕（log tab 能看到）
         if !result.succeeded.isEmpty {
             FileHandle.standardError.write(Data(
                 "[VaultBrowser] imported \(result.succeeded.count) file(s) to raw/\n".utf8))
+        }
+        if !result.editableCopies.isEmpty {
+            FileHandle.standardError.write(Data(
+                "[VaultBrowser] created \(result.editableCopies.count) editable note copy/copies\n".utf8))
         }
         for s in result.skipped {
             FileHandle.standardError.write(Data(
@@ -403,7 +528,10 @@ struct VaultBrowser: View {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = []
+        var contentTypes: [UTType] = [.plainText]
+        if let markdown = UTType(filenameExtension: "md") { contentTypes.append(markdown) }
+        if let text = UTType(filenameExtension: "txt") { contentTypes.append(text) }
+        panel.allowedContentTypes = contentTypes
         panel.message = "选 .md / .txt 文件导入到 raw/"
         if panel.runModal() == .OK {
             importURLs(panel.urls)
@@ -415,13 +543,52 @@ struct VaultBrowser: View {
 
     @ViewBuilder
     private func fileRow(url: URL, system: String, tint: Color) -> some View {
-        HStack {
+        let relPath = FrontendPresentation.relativePath(of: url, vaultRoot: model.vaultRoot)
+        let body = try? String(contentsOf: url, encoding: .utf8)
+        let title = FrontendPresentation.sidebarTitle(relPath: relPath, body: body)
+        let subtitle = FrontendPresentation.sidebarSubtitle(relPath: relPath)
+        HStack(spacing: 8) {
             Image(systemName: system).foregroundColor(tint)
-            Text(url.lastPathComponent)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let subtitle, subtitle != title {
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
         }
         .tag(url as URL?)
+        .contextMenu {
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } label: {
+                Label("Reveal in Finder", systemImage: "folder")
+            }
+            Button {
+                NSWorkspace.shared.open(url)
+            } label: {
+                Label("Open Externally", systemImage: "arrow.up.right.square")
+            }
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(relPath, forType: .string)
+            } label: {
+                Label("Copy Relative Path", systemImage: "doc.on.doc")
+            }
+            Divider()
+            Button {
+                renameFile(url: url, relPath: relPath)
+            } label: {
+                Label("Rename…", systemImage: "pencil")
+            }
+            .disabled(!FrontendPresentation.canRenameSidebarItem(relPath: relPath))
+        }
     }
 
     @ViewBuilder
@@ -438,13 +605,67 @@ struct VaultBrowser: View {
 
     private func rawFiles() -> [URL] {
         let dir = model.vaultRoot.appendingPathComponent("raw")
-        return (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        let all = (try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return all
+            .filter { ["md", "txt"].contains($0.pathExtension.lowercased()) }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
     }
+
+    private func notesFiles() -> [URL] {
+        markdownFiles(under: "notes")
+    }
+
     /// 列出 wiki 子目录下 .md 文件（按文件名排序）
     private func wikiFiles(under rel: String) -> [URL] {
+        markdownFiles(under: rel)
+    }
+
+    private func markdownFiles(under rel: String) -> [URL] {
         let dir = model.vaultRoot.appendingPathComponent(rel)
-        let all = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-        return all.filter { $0.pathExtension == "md" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let all = (try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return all
+            .filter { $0.pathExtension.lowercased() == "md" }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    private func renameFile(url: URL, relPath: String) {
+        guard FrontendPresentation.canRenameSidebarItem(relPath: relPath) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Rename Note"
+        alert.informativeText = "Enter a new Markdown filename."
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        textField.stringValue = url.lastPathComponent
+        alert.accessoryView = textField
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        var newName = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty, newName != url.lastPathComponent else { return }
+        if (newName as NSString).pathExtension.isEmpty {
+            newName += ".md"
+        }
+        let destination = url.deletingLastPathComponent().appendingPathComponent(newName)
+        guard destination != url else { return }
+        do {
+            try FileManager.default.moveItem(at: url, to: destination)
+            if model.selectedFile == url {
+                model.selectedFile = destination
+            }
+            model.refreshStatus()
+        } catch {
+            let errorAlert = NSAlert(error: error)
+            errorAlert.messageText = "Rename Failed"
+            errorAlert.runModal()
+        }
     }
 }
 
@@ -462,79 +683,15 @@ struct DreamPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // header with action buttons
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: "moon.stars.fill").foregroundColor(.accentColor)
-                    Text("Dream").font(.headline)
-                    Spacer()
-                    if model.isRunning {
-                        ProgressView().controlSize(.small)
-                    }
-                }
-                HStack(spacing: 6) {
-                    Button {
-                        // P0-1: 先 flush editor buffer，避免 DreamCycle 读到旧内容
-                        if let es = editorState {
-                            _ = es.flushIfDirty()
-                        }
-                        Task { await model.runDream() }
-                    } label: {
-                        Label("Run Dream", systemImage: "play.fill")
-                    }
-                    .keyboardShortcut("d", modifiers: .command)
-                    .disabled(model.isRunning)
-                    Button(role: .destructive) {
-                        // P9: 不直接 rollback，先弹确认 dialog（让用户看到 commit msg + 文件数）
-                        model.requestRollback()
-                    } label: {
-                        Label("Rollback", systemImage: "arrow.uturn.backward")
-                    }
-                    .disabled(model.isRunning)
-                    .confirmationDialog(
-                        "确认回滚上次的 dream commit？",
-                        isPresented: Binding(
-                            get: { model.rollbackConfirmation != nil },
-                            set: { if !$0 { model.cancelRollback() } }
-                        ),
-                        titleVisibility: .visible
-                    ) {
-                        Button("确认回滚", role: .destructive) {
-                            model.confirmRollback()
-                        }
-                        Button("取消", role: .cancel) {
-                            model.cancelRollback()
-                        }
-                    } message: {
-                        if let c = model.rollbackConfirmation {
-                            Text("""
-                            Commit: \(c.shortHash)
-                            Message: \(c.subject)
-                            Author: \(c.author)
-                            Files: \(c.changedFiles)
-                            Date: \(c.date.formatted(date: .abbreviated, time: .shortened))
-
-                            回滚会生成一个反向 commit 撤销这些改动。
-                            """)
-                        }
-                    }
-                    Spacer()
-                    Button {
-                        model.refreshStatus()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .help("Refresh status")
-                }
-            }
-            .padding(10)
-            .background(.bar)
+            dreamHeader
 
             Divider()
 
-            // status block
-            statusBlock
-                .padding(10)
+            ScrollView {
+                statusBlock
+                    .padding(12)
+            }
+            .frame(minHeight: 260)
 
             Divider()
 
@@ -548,64 +705,156 @@ struct DreamPanel: View {
         }
     }
 
+    private var dreamHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Dream Inspector", systemImage: "moon.stars.fill")
+                    .font(.headline)
+                Spacer()
+                if model.isRunning {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            HStack(spacing: 6) {
+                Button {
+                    // P0-1: 先 flush editor buffer，避免 DreamCycle 读到旧内容
+                    if let es = editorState {
+                        _ = es.flushIfDirty()
+                    }
+                    Task { await model.runDream() }
+                } label: {
+                    Label("Run", systemImage: "play.fill")
+                }
+                .keyboardShortcut("d", modifiers: .command)
+                .disabled(model.isRunning)
+
+                Button(role: .destructive) {
+                    // P9: 不直接 rollback，先弹确认 dialog（让用户看到 commit msg + 文件数）
+                    model.requestRollback()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .disabled(model.isRunning)
+                .help("Rollback last dream commit")
+                .confirmationDialog(
+                    "确认回滚上次的 dream commit？",
+                    isPresented: Binding(
+                        get: { model.rollbackConfirmation != nil },
+                        set: { if !$0 { model.cancelRollback() } }
+                    ),
+                    titleVisibility: .visible
+                ) {
+                    Button("确认回滚", role: .destructive) {
+                        model.confirmRollback()
+                    }
+                    Button("取消", role: .cancel) {
+                        model.cancelRollback()
+                    }
+                } message: {
+                    if let c = model.rollbackConfirmation {
+                        Text("""
+                        Commit: \(c.shortHash)
+                        Message: \(c.subject)
+                        Author: \(c.author)
+                        Files: \(c.changedFiles)
+                        Date: \(c.date.formatted(date: .abbreviated, time: .shortened))
+
+                        回滚会生成一个反向 commit 撤销这些改动。
+                        """)
+                    }
+                }
+
+                Spacer()
+
+                Button {
+                    model.refreshStatus()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh status")
+            }
+            .controlSize(.small)
+        }
+        .padding(12)
+        .background(.bar)
+    }
+
     @ViewBuilder
     private var statusBlock: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Status").font(.subheadline).bold()
-            row("raw 候选", value: "\(model.status.rawCandidateCount)")
-            row("ledger 总数", value: "\(model.status.totalMemories)",
-                detail: "durable \(model.status.durableCount) / candidate \(model.status.candidateCount) / archived \(model.status.archivedCount)")
-            row("待裁决", value: "\(model.status.withContradictsCount)")
+        VStack(alignment: .leading, spacing: 10) {
+            GroupBox("Status") {
+                VStack(alignment: .leading, spacing: 5) {
+                    row("Raw candidates", value: "\(model.status.rawCandidateCount)")
+                    row("Total memories", value: "\(model.status.totalMemories)")
+                    row("Durable", value: "\(model.status.durableCount)")
+                    row("Candidate", value: "\(model.status.candidateCount)")
+                    row("Archived", value: "\(model.status.archivedCount)")
+                    row("Needs review", value: "\(model.status.withContradictsCount)")
+                }
+                .padding(.top, 2)
+            }
 
             // P8: 预算状态（Dream tab 顶部 + Budget tab 详细表）
             // 这里只显示紧凑版，详细见 Settings → Budget
             if let bs = model.budgetSnapshot {
-                Divider().padding(.vertical, 4)
-                Text("Budget").font(.subheadline).bold()
-                row("today", value: "\(bs.todayCount)/\(bs.maxCallsPerDay == 0 ? "∞" : "\(bs.maxCallsPerDay)") calls")
-                row("month", value: String(format: "$%.2f", bs.monthCost) + "/\(bs.monthlyBudgetUSD == 0 ? "∞" : String(format: "$%.2f", bs.monthlyBudgetUSD))")
-                if bs.isOverBudget {
-                    Label("Over budget", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundColor(.red)
-                } else if bs.monthlyBudgetUSD > 0 && bs.monthCost > bs.monthlyBudgetUSD * 0.8 {
-                    Label("Approaching budget limit", systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundColor(.orange)
+                GroupBox("Budget") {
+                    VStack(alignment: .leading, spacing: 5) {
+                        row("Today", value: FrontendPresentation.budgetUsage(count: bs.todayCount, limit: bs.maxCallsPerDay))
+                        row("Month", value: FrontendPresentation.monthlySpend(cost: bs.monthCost, limit: bs.monthlyBudgetUSD))
+                        if bs.isOverBudget {
+                            Label("Over budget", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        } else if bs.monthlyBudgetUSD > 0 && bs.monthCost > bs.monthlyBudgetUSD * 0.8 {
+                            Label("Approaching budget limit", systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+                    }
+                    .padding(.top, 2)
                 }
             }
 
             // P3-T1: 行内矛盾裁决（计数 > 0 才显示）
             if model.status.withContradictsCount > 0 {
-                Divider().padding(.vertical, 4)
-                Text("Conflicts (\(model.status.withContradictsCount))")
-                    .font(.subheadline).bold()
-                ConflictResolutionView(ledger: model.ledger)
+                GroupBox("Conflicts") {
+                    ConflictResolutionView(ledger: model.ledger)
+                        .padding(.top, 2)
+                }
             }
 
             // P3-C3: 5 步骤 stage 进度
             if model.isRunning || model.lastOutcome != nil || model.lastError != nil {
-                Divider().padding(.vertical, 4)
-                Text("Pipeline").font(.subheadline).bold()
-                ForEach(model.dreamStages) { stage in
-                    stageRow(stage)
+                GroupBox("Pipeline") {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(model.dreamStages) { stage in
+                            stageRow(stage)
+                        }
+                    }
+                    .padding(.top, 2)
                 }
             }
 
             if let r = model.lastOutcome {
-                Divider().padding(.vertical, 4)
-                Text("Last Run").font(.subheadline).bold()
-                row("gathered", value: "\(r.gatheredCount)")
-                row("accepted", value: "\(r.acceptedCount)")
-                row("archived", value: "\(r.archivedCount)")
-                row("needs review", value: "\(r.needsReviewCount)")
-                row("committed", value: r.committed ? "✓" : "—")
+                GroupBox("Last Run") {
+                    VStack(alignment: .leading, spacing: 5) {
+                        row("Gathered", value: "\(r.gatheredCount)")
+                        row("Accepted", value: "\(r.acceptedCount)")
+                        row("Archived", value: "\(r.archivedCount)")
+                        row("Needs review", value: "\(r.needsReviewCount)")
+                        row("Committed", value: r.committed ? "✓" : "—")
+                    }
+                    .padding(.top, 2)
+                }
             }
             if let err = model.lastError {
-                Text("⚠ \(err)")
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .padding(.top, 4)
+                GroupBox("Error") {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
             }
         }
     }
