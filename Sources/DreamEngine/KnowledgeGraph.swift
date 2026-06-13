@@ -82,4 +82,70 @@ public struct KnowledgeGraph: Equatable {
         if scored.count > limit { scored.removeLast(scored.count - limit) }
         return scored
     }
+
+    // MARK: - P3-6 follow-up: 语义边 (embedding cosine 跨文件同主题)
+
+    /// 算"建议加的语义边"：跨文件同主题的两节点，embedding cosine ≥ threshold.
+    /// **不修改 graph 本身** (immutable); 返回建议边列表, 调用方决定是否 addEdge.
+    ///
+    /// 为什么纯函数:
+    /// - KnowledgeGraph 是 value type, 改它需要 var copy (调用方持有); 这是有意的设计
+    /// - semanticEdges 是"建议", 跟图谱已有"来源"边 (共享 source file) 是独立信号
+    /// - 调用方 (Persister / GraphRenderer) 可选择性应用
+    ///
+    /// - Parameters:
+    ///   - provider: EmbeddingProvider (走 NLEmbeddingProvider 或 cache/static)
+    ///   - threshold: cosine 阈值 (默认 0.85, 跟 EmbeddingMerge.cosineMergeThreshold 对齐)
+    ///   - maxPerNode: 每节点最多返 maxPerNode 条建议边 (避免热门节点刷屏)
+    ///   - texts: 节点 id → 文本 映射 (需要外部传入, KnowledgeGraph 不知道 memory.text)
+    /// - Returns: [(a, b, score)] 排序按 score 降序
+    public func semanticEdges(
+        provider: EmbeddingProvider,
+        threshold: Double = 0.85,
+        maxPerNode: Int = 5,
+        texts: [String: String]
+    ) -> [(a: String, b: String, score: Double)] {
+        // 1. 批量算 embedding
+        var embeddings: [String: [Double]] = [:]
+        for id in nodes {
+            if let text = texts[id], let v = provider.embed(text) {
+                embeddings[id] = v
+            }
+        }
+        guard embeddings.count >= 2 else { return [] }
+
+        // 2. 两两配对算 cosine
+        let ids = Array(embeddings.keys)
+        var allPairs: [(a: String, b: String, score: Double)] = []
+        allPairs.reserveCapacity(ids.count * (ids.count - 1) / 2)
+        for i in 0..<ids.count {
+            for j in (i + 1)..<ids.count {
+                let a = ids[i], b = ids[j]
+                let av = embeddings[a]!
+                let bv = embeddings[b]!
+                // 跳过已有边 (来源重叠的边已经在 graph 里)
+                if neighbors(of: a).contains(b) { continue }
+                let sim = EmbeddingMath.cosineSimilarity(av, bv)
+                if sim >= threshold {
+                    allPairs.append((a, b, sim))
+                }
+            }
+        }
+        // 3. 全局排序 + 每节点限 maxPerNode
+        allPairs.sort { lhs, rhs in
+            if lhs.score == rhs.score { return lhs.a < rhs.a }
+            return lhs.score > rhs.score
+        }
+        var perNodeCount: [String: Int] = [:]
+        var out: [(a: String, b: String, score: Double)] = []
+        for pair in allPairs {
+            let ca = perNodeCount[pair.a, default: 0]
+            let cb = perNodeCount[pair.b, default: 0]
+            if ca >= maxPerNode || cb >= maxPerNode { continue }
+            out.append(pair)
+            perNodeCount[pair.a] = ca + 1
+            perNodeCount[pair.b] = cb + 1
+        }
+        return out
+    }
 }

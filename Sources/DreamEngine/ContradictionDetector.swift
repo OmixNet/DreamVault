@@ -19,9 +19,18 @@ public struct ContradictionDetector {
 
     public init(llm: LLMProvider,
                 maxPairsPerNight: Int = 50,
-                graph: KnowledgeGraph = KnowledgeGraph()) {
+                graph: KnowledgeGraph = KnowledgeGraph(),
+                embeddingProvider: EmbeddingProvider? = nil,
+                embeddingTopK: Int = 5,
+                embeddingSimilarityThreshold: Double = 0.5) {
         self.llm = llm
-        self.prescreener = Prescreener(maxPairsPerNight: maxPairsPerNight, graph: graph)
+        self.prescreener = Prescreener(
+            maxPairsPerNight: maxPairsPerNight,
+            graph: graph,
+            embeddingProvider: embeddingProvider,
+            embeddingTopK: embeddingTopK,
+            embeddingSimilarityThreshold: embeddingSimilarityThreshold
+        )
     }
 
     /// 暴露 mutable 接口给 DreamCycle 写统计 (替代 lastPrescreenResult 字段)

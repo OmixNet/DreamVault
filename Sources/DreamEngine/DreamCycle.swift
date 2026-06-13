@@ -14,9 +14,22 @@ import Foundation
 ///   注释没跟着改。P8 修文档，但**不改默认值**——保持 Settings → Dream 显式开启路径。
 public struct DreamConfig: Sendable {
     public var consolidation: ConsolidationConfig
+    /// P3-6 follow-up: 矛盾预筛 embedding provider. nil = 不启用 (走老 token/AA 路径).
+    /// 真生产建议给 NLEmbeddingProvider (NLEmbedding 系统自带, 离线, 免费).
+    public var embeddingProvider: EmbeddingProvider?
+    /// P3-6 follow-up: 每 candidate 取 embedding topK 个 existing (默认 5).
+    public var embeddingTopK: Int
+    /// P3-6 follow-up: embedding cosine 阈值 (默认 0.5, 低于此算"低相关"不纳入候选).
+    public var embeddingSimilarityThreshold: Double
 
-    public init(consolidation: ConsolidationConfig = ConsolidationConfig()) {
+    public init(consolidation: ConsolidationConfig = ConsolidationConfig(),
+                embeddingProvider: EmbeddingProvider? = nil,
+                embeddingTopK: Int = 5,
+                embeddingSimilarityThreshold: Double = 0.5) {
         self.consolidation = consolidation
+        self.embeddingProvider = embeddingProvider
+        self.embeddingTopK = embeddingTopK
+        self.embeddingSimilarityThreshold = embeddingSimilarityThreshold
     }
 
     /// 快速配置：纯 mock / 调试用（2 步快速路径 + 串行）
@@ -26,6 +39,7 @@ public struct DreamConfig: Sendable {
     /// P3-3 评审 §1.2 修复: 生产默认走 3 步 (ConsolidationConfig() 默认), 防幻觉.
     /// 真实 LLM provider (Ollama / OpenAI-compat) 走 3 段 CoT 是默认行为.
     /// 注意: 旧 "productionDefault" 注释 (P3 决策 T6) 说 2 步, P3-3 翻案 — 真生产推荐 3 步.
+    /// P3-6 follow-up: 不带 embedding (向后兼容, 不强依赖 NLEmbedding 可用性).
     public static let productionDefault = DreamConfig()
 }
 
@@ -207,7 +221,14 @@ public struct DreamCycle {
                 // 用现有全部 memory 建图 (durable + candidate 都进图, candidate 间连边)
                 // 这样预筛的 Adamic-Adar 才能拿到真信号; 否则空图 → 全走 token 预筛
                 let graph = KnowledgeGraph(memories: mergedLedger.memories + newAccepted)
-                var detector = ContradictionDetector(llm: llm, maxPairsPerNight: 50, graph: graph)
+                var detector = ContradictionDetector(
+                    llm: llm,
+                    maxPairsPerNight: 50,
+                    graph: graph,
+                    embeddingProvider: config.embeddingProvider,
+                    embeddingTopK: config.embeddingTopK,
+                    embeddingSimilarityThreshold: config.embeddingSimilarityThreshold
+                )
                 let dur = mergedLedger.memories.filter { $0.status == .durable }
                 if !dur.isEmpty {
                     do {
@@ -251,7 +272,7 @@ public struct DreamCycle {
                     let result = Self.mergeSimilar(
                         newAccepted: newAccepted,
                         existing: mergedLedger.memories,
-                        embeddingProvider: nil  // P3-6: 暂 nil (DreamConfig 升级时再注入)
+                        embeddingProvider: config.embeddingProvider  // P3-6 follow-up: 从 config 注入
                     )
                     newAccepted = result.newAccepted
                     mergedLedger.memories = result.updatedExisting

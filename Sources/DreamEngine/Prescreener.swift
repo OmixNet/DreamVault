@@ -22,14 +22,31 @@ public struct Prescreener {
         public let truncated: Int
         /// 预筛留下总数 (toCompare.count + truncated)
         public let totalKeptByScreener: Int
+        /// P3-6 follow-up: 启用了 embedding 预筛 (topK 模式) 时 = true
+        public let embeddingPrescreenEnabled: Bool
     }
 
     public let maxPairsPerNight: Int
     public let graph: KnowledgeGraph
+    /// P3-6 follow-up: embedding 预筛 (topK 模式). nil = 不启用, 走老 token/AA 路径.
+    public let embeddingProvider: EmbeddingProvider?
+    /// P3-6 follow-up: 每 candidate 取 embedding 最相似的 topK 个 existing.
+    /// 默认 5. maxPairsPerNight=50 / topK=5 / 10 candidate = ≤50 pair 走 LLM.
+    public let embeddingTopK: Int
+    /// P3-6 follow-up: embedding cosine 阈值 (≥ 阈值才纳入候选).
+    /// 默认 0.5 (低于此算"低相关", 跟 embedding merge 阈值 0.85 错开).
+    public let embeddingSimilarityThreshold: Double
 
-    public init(maxPairsPerNight: Int = 50, graph: KnowledgeGraph) {
+    public init(maxPairsPerNight: Int = 50,
+                graph: KnowledgeGraph,
+                embeddingProvider: EmbeddingProvider? = nil,
+                embeddingTopK: Int = 5,
+                embeddingSimilarityThreshold: Double = 0.5) {
         self.maxPairsPerNight = maxPairsPerNight
         self.graph = graph
+        self.embeddingProvider = embeddingProvider
+        self.embeddingTopK = max(1, embeddingTopK)
+        self.embeddingSimilarityThreshold = embeddingSimilarityThreshold
     }
 
     /// 预筛: 对每个 candidate, 找出与哪些 existing 值得走 LLM.
@@ -41,22 +58,58 @@ public struct Prescreener {
         var scored: [(score: Double, cand: Memory, exist: Memory)] = []
         scored.reserveCapacity(candidates.count * existings.count / 4)
 
+        // P3-6 follow-up: 提前算 candidate 跟 existing 的 embedding (预算 1 次/candidate + 1 次/existing)
+        let candEmbeddings: [String: [Double]] = computeEmbeddings(for: candidates)
+        let existEmbeddings: [String: [Double]] = computeEmbeddings(for: existings)
+        let embeddingActive = !candEmbeddings.isEmpty && !existEmbeddings.isEmpty
+
         for cand in candidates {
             let candTokens = TextEntityTokens.extract(cand.text)
             let candNeighbors = graph.neighbors(of: cand.id)
-            for exist in existings {
-                if exist.id == cand.id { continue }
-                let existTokens = TextEntityTokens.extract(exist.text)
-                // 0 成本判定 1: 共享至少 1 个实体 token
-                let tokenOverlap = !candTokens.isDisjoint(with: existTokens)
-                // 0 成本判定 2: 图邻接 (Adamic-Adar)
-                let aa = graph.adamicAdar(cand.id, exist.id)
-                let keep = tokenOverlap || aa > 0
-                if keep {
-                    // 评分: 优先 token 重合 (语义强), 叠加图分
-                    let score = (tokenOverlap ? 1.0 : 0.0) + aa
-                    scored.append((score, cand, exist))
+            let candVec = candEmbeddings[cand.id]
+
+            // P3-6 follow-up: embedding 预筛 topK 模式
+            // 优先级: 1) embedding topK (语义强)  2) token overlap  3) Adamic-Adar
+            // 每对只计一次分, 优先按 embedding > token > AA
+            var seenExistIds: Set<String> = []
+            var candPairs: [(score: Double, exist: Memory)] = []
+
+            if let cv = candVec, embeddingActive {
+                // 算跟所有 existing 的 cosine, 排序取 topK
+                var existScores: [(exist: Memory, sim: Double)] = []
+                existScores.reserveCapacity(existings.count)
+                for exist in existings where exist.id != cand.id {
+                    if let ev = existEmbeddings[exist.id] {
+                        let sim = EmbeddingMath.cosineSimilarity(cv, ev)
+                        if sim >= embeddingSimilarityThreshold {
+                            existScores.append((exist, sim))
+                        }
+                    }
                 }
+                existScores.sort { $0.sim > $1.sim }
+                let topK = Array(existScores.prefix(embeddingTopK))
+                for (exist, sim) in topK {
+                    // 评分: embedding 优先 (权重 2.0), 走 LLM
+                    candPairs.append((score: 2.0 + sim, exist: exist))
+                    seenExistIds.insert(exist.id)
+                }
+            }
+
+            // 老路径: 共享至少 1 个实体 token OR Adamic-Adar > 0 (用于补漏 embedding 跨语言场景)
+            for exist in existings {
+                if exist.id == cand.id || seenExistIds.contains(exist.id) { continue }
+                let existTokens = TextEntityTokens.extract(exist.text)
+                let tokenOverlap = !candTokens.isDisjoint(with: existTokens)
+                let aa = graph.adamicAdar(cand.id, exist.id)
+                if tokenOverlap || aa > 0 {
+                    let score = (tokenOverlap ? 1.0 : 0.0) + aa
+                    candPairs.append((score: score, exist: exist))
+                    seenExistIds.insert(exist.id)
+                }
+            }
+
+            for pair in candPairs {
+                scored.append((pair.score, cand, pair.exist))
             }
         }
 
@@ -76,8 +129,22 @@ public struct Prescreener {
             toCompare: Array(toCompare),
             skipped: skipped,
             truncated: truncated,
-            totalKeptByScreener: totalKept
+            totalKeptByScreener: totalKept,
+            embeddingPrescreenEnabled: embeddingActive
         )
+    }
+
+    /// P3-6 follow-up: 批量算 embedding (走 provider). nil provider → 返 [:] (不启用).
+    /// 重复文本走 provider 自带 cache (CachedEmbeddingProvider), O(unique texts).
+    private func computeEmbeddings(for memories: [Memory]) -> [String: [Double]] {
+        guard let provider = embeddingProvider else { return [:] }
+        var out: [String: [Double]] = [:]
+        for m in memories {
+            if let v = provider.embed(m.text) {
+                out[m.id] = v
+            }
+        }
+        return out
     }
 }
 
