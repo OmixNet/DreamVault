@@ -32,15 +32,29 @@ public struct DreamConfig: Sendable {
         self.embeddingSimilarityThreshold = embeddingSimilarityThreshold
     }
 
-    /// 快速配置：纯 mock / 调试用（2 步快速路径 + 串行）
+    /// 快速配置：纯 mock / 调试用（2 步快速路径 + 串行 + 无 embedding）
+    /// P3-6 follow-up: fastDebug 不带 embedding (跟 v0.7.0 行为一致, 测试无 NLEmbedding 依赖)
     public static let fastDebug = DreamConfig(
         consolidation: ConsolidationConfig(useThreeStepCoT: false, concurrency: 1)
     )
     /// P3-3 评审 §1.2 修复: 生产默认走 3 步 (ConsolidationConfig() 默认), 防幻觉.
     /// 真实 LLM provider (Ollama / OpenAI-compat) 走 3 段 CoT 是默认行为.
     /// 注意: 旧 "productionDefault" 注释 (P3 决策 T6) 说 2 步, P3-3 翻案 — 真生产推荐 3 步.
-    /// P3-6 follow-up: 不带 embedding (向后兼容, 不强依赖 NLEmbedding 可用性).
-    public static let productionDefault = DreamConfig()
+    /// P3-6 follow-up: productionDefault 默认开 NLEmbedding (走 CachedEmbeddingProvider
+    /// 包装, 避免重复算). macOS 12+ NLEmbedding 系统自带, 离线, 免费.
+    /// - NLEmbedding 不可用 (macOS 11- / 系统语言不支持) → embed 返 nil, 走 P3-6
+    ///   老 token/AA 路径 (0 退化, 自动降级).
+    /// - 测试用 .unconfigured 拿无 embedding 版本, 避免 NLEmbedding 依赖.
+    public static let productionDefault: DreamConfig = {
+        let nl = NLEmbeddingProvider(mode: .auto)
+        let provider: EmbeddingProvider? = nl.dimension > 0
+            ? CachedEmbeddingProvider(inner: nl)
+            : nil
+        return DreamConfig(embeddingProvider: provider)
+    }()
+    /// P3-6 follow-up: 显式无 embedding 的配置 (测试 / 离线用).
+    /// 跟 v0.7.0 productionDefault 行为一致 (无 embedding).
+    public static let unconfigured = DreamConfig()
 }
 
 // MARK: - DreamCycle：夜间一次的五步编排器

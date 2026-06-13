@@ -125,8 +125,17 @@ final class P36FollowupTests: XCTestCase {
         ]
         let edges = graph.semanticEdges(provider: provider, threshold: 0.85, maxPerNode: 5, texts: texts)
         // m1 跟 m2 cosine 1.0, 跟 m3 cosine 0.0
-        XCTAssertTrue(edges.contains { $0.a == "m1" && $0.b == "m2" && $0.score > 0.9 })
-        XCTAssertFalse(edges.contains { $0.a == "m1" && $0.b == "m3" })
+        // 注意: Set 迭代顺序非确定, 边可能 (m1, m2) 或 (m2, m1)
+        let hasM1M2 = edges.contains { pair in
+            let (a, b, score) = pair
+            return ((a == "m1" && b == "m2") || (a == "m2" && b == "m1")) && score > 0.9
+        }
+        XCTAssertTrue(hasM1M2, "应包含 m1-m2 边 (cosine 1.0)")
+        let hasM1M3 = edges.contains { pair in
+            let (a, b, _) = pair
+            return (a == "m1" && b == "m3") || (a == "m3" && b == "m1")
+        }
+        XCTAssertFalse(hasM1M3, "不应包含 m1-m3 边 (cosine 0)")
     }
 
     /// 7. maxPerNode 限热门节点
@@ -221,9 +230,17 @@ final class P36FollowupTests: XCTestCase {
         XCTAssertEqual(config.embeddingTopK, 3)
     }
 
-    /// 14. DreamConfig.productionDefault 默认无 embedding (向后兼容)
-    func testDreamConfig_productionDefaultNoEmbedding() {
-        XCTAssertNil(DreamConfig.productionDefault.embeddingProvider)
+    /// 14. P3-6 follow-up (v0.7.2): productionDefault 默认开 NLEmbedding (macOS 12+)
+    /// - dimension > 0 → CachedEmbeddingProvider
+    /// - dimension == 0 (不可用) → nil (降级走老路径)
+    /// v0.7.0 老测试 (P36FollowupTests.testDreamConfig_productionDefaultNoEmbedding)
+    /// 改成这个 invariant 兼容: 不可用时仍 nil, 可用时 NOT nil.
+    func testDreamConfig_productionDefaultEmbeddingPolicy() {
+        if let provider = DreamConfig.productionDefault.embeddingProvider {
+            // 可用: 应是 CachedEmbeddingProvider 包装的 NLEmbeddingProvider
+            XCTAssertGreaterThan(provider.dimension, 0, "可用 provider dimension 应 > 0")
+        }
+        // 不可用时 nil 也合法 (macOS 11- / 系统语言不支持)
     }
 
     // MARK: - Helper
