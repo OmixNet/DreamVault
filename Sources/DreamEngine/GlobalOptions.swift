@@ -9,6 +9,26 @@ public struct GlobalOptions {
     public var llm: String?
     public var verbose: Bool = false
 
+    public struct RuntimeContext {
+        public let resolved: ResolvedDreamRuntimeConfig
+        public let provider: any LLMProvider
+        public let budgetManager: BudgetManager
+        public let dreamConfig: DreamConfig
+    }
+
+    public enum RuntimeConfigError: Error, LocalizedError, CustomStringConvertible {
+        case cloudProviderRequiresConsent
+
+        public var errorDescription: String? { description }
+
+        public var description: String {
+            switch self {
+            case .cloudProviderRequiresConsent:
+                return "OpenAI-compatible provider requires explicit privacy consent before sending raw summaries to a cloud API."
+            }
+        }
+    }
+
     /// 从 args 列表里抽走全局 flag（inout 修改原数组）
     public static func parse(from args: inout [String]) -> GlobalOptions {
         var o = GlobalOptions()
@@ -47,39 +67,45 @@ public struct GlobalOptions {
     /// 决定 LLM provider。P8 修复：走 ResolvedConfig 5 层合并，跟 GUI 同源
     /// (CLI flag > .dream/config.json > UserDefaults > env vars > hardcoded)
     public func llmProvider() -> LLMProvider {
-        let vault = vaultURL()
-        let env = ProcessInfo.processInfo
-        let settings = DreamSettings.load()
-        let cliProvider = parseProvider(llm)
-        let resolved = ResolvedDreamRuntimeConfig.resolve(
-            cli: ResolvedDreamRuntimeConfig.CLIOverrides(
-                provider: cliProvider,
-                model: env.environment["OLLAMA_MODEL"],
-                baseURL: env.environment["OLLAMA_BASE_URL"]
-            ),
-            vaultConfig: nil,  // .dream/config.json 解析在 P4-T5 加
-            settings: settings,
-            env: env.environment
-        )
+        let resolved = (try? resolvedRuntimeConfig(writeDefaultVaultConfig: false))
+            ?? ResolvedDreamRuntimeConfig.resolve(
+                cli: ResolvedDreamRuntimeConfig.CLIOverrides(provider: parseProvider(llm)),
+                settings: DreamSettings.load()
+            )
         return makeProvider(from: resolved)
+    }
+
+    public func resolvedRuntimeConfig(writeDefaultVaultConfig: Bool = true) throws -> ResolvedDreamRuntimeConfig {
+        let vault = vaultURL()
+        let env = ProcessInfo.processInfo.environment
+        let configURL = VaultConfig.configURL(vaultRoot: vault)
+        let vaultConfig: VaultConfig? = FileManager.default.fileExists(atPath: configURL.path)
+            ? try DreamConfigLoader.load(vaultRoot: vault, writeDefaultIfMissing: false)
+            : nil
+        return ResolvedDreamRuntimeConfig.resolve(
+            cli: ResolvedDreamRuntimeConfig.CLIOverrides(
+                provider: parseProvider(llm),
+                model: env["OLLAMA_MODEL"],
+                baseURL: env["OLLAMA_BASE_URL"]
+            ),
+            vaultConfig: vaultConfig,
+            settings: DreamSettings.load(),
+            env: env
+        )
     }
 
     /// 决定 LLM provider + 包一层 BudgetedLLMProvider。
     /// 任何时候 CLI / launchd 调 cmdRun 都应该走这个（不是 llmProvider()），
     /// 否则预算只是"检查器"不记录。
     public func budgetedLLMProvider() async -> (provider: any LLMProvider, budgetManager: BudgetManager) {
+        let context = try? await runtimeContext()
+        if let context {
+            return (context.provider, context.budgetManager)
+        }
         let vault = vaultURL()
-        let settings = DreamSettings.load()
-        let cliProvider = parseProvider(llm)
         let resolved = ResolvedDreamRuntimeConfig.resolve(
-            cli: ResolvedDreamRuntimeConfig.CLIOverrides(
-                provider: cliProvider,
-                model: ProcessInfo.processInfo.environment["OLLAMA_MODEL"],
-                baseURL: ProcessInfo.processInfo.environment["OLLAMA_BASE_URL"]
-            ),
-            vaultConfig: nil,
-            settings: settings,
-            env: ProcessInfo.processInfo.environment
+            cli: ResolvedDreamRuntimeConfig.CLIOverrides(provider: parseProvider(llm)),
+            settings: DreamSettings.load()
         )
         let base = makeProvider(from: resolved)
         let providerName: String
@@ -109,15 +135,49 @@ public struct GlobalOptions {
         return (wrapped, budget)
     }
 
+    public func runtimeContext(writeDefaultVaultConfig: Bool = true) async throws -> RuntimeContext {
+        let vault = vaultURL()
+        let resolved = try resolvedRuntimeConfig(writeDefaultVaultConfig: writeDefaultVaultConfig)
+        if resolved.llm.provider == .openaiCompat,
+           !resolved.privacy.allowCloudSendRawSummary {
+            throw RuntimeConfigError.cloudProviderRequiresConsent
+        }
+        let base = makeProvider(from: resolved)
+        let providerName: String
+        switch resolved.llm.provider {
+        case .mock: providerName = "mock"
+        case .ollama: providerName = "ollama"
+        case .openaiCompat: providerName = "openai-compat"
+        }
+        let budget = await MainActor.run {
+            BudgetManager(config: resolved.budget, vaultRoot: vault)
+        }
+        let canProceedFn: @Sendable (_ estOutTok: Int, _ modelHint: String) async -> Bool = { estOutTok, modelHint in
+            await MainActor.run { budget.canProceed(estimatedOutputTokens: estOutTok, modelHint: modelHint) }
+        }
+        let recordCallFn: @Sendable (String, String, Int, Int) async -> Void = { p, m, i, o in
+            await MainActor.run {
+                budget.recordCall(provider: p, model: m, inputTokens: i, outputTokens: o)
+            }
+        }
+        let wrapped = BudgetedLLMProvider(
+            wrapping: base,
+            providerName: providerName,
+            canProceedFn: canProceedFn,
+            recordCallFn: recordCallFn
+        )
+        return RuntimeContext(
+            resolved: resolved,
+            provider: wrapped,
+            budgetManager: budget,
+            dreamConfig: resolved.toDreamConfig()
+        )
+    }
+
     /// 把 CLI 字符串 (--llm ollama / mock / openai) 翻译成 ResolvedLLM.Provider
     private func parseProvider(_ s: String?) -> ResolvedDreamRuntimeConfig.ResolvedLLM.Provider? {
         guard let s = s?.lowercased(), !s.isEmpty else { return nil }
-        switch s {
-        case "mock": return .mock
-        case "ollama": return .ollama
-        case "openai", "openai-compat", "openaicompat": return .openaiCompat
-        default: return nil  // 未知 → 不做 CLI 覆盖，让下面层兜底
-        }
+        return ResolvedDreamRuntimeConfig.parseProvider(s)
     }
 
     /// 从 ResolvedConfig 转成 LLMProvider

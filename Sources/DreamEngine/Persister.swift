@@ -266,8 +266,8 @@ public struct Persister {
                     changed = true
                 }
                 // 2. contradicts 同时也是 relatedTo 的一种：补到双方 relatedTo
-                for b in a.contradicts where byID[b] != nil && !byID[b]!.relatedTo.contains(b) {
-                    byID[b]!.relatedTo.append(b)
+                for b in a.contradicts where byID[b] != nil && !byID[b]!.relatedTo.contains(a.id) {
+                    byID[b]!.relatedTo.append(a.id)
                     changed = true
                 }
                 for b in a.contradicts where byID[b] != nil && !a.relatedTo.contains(b) {

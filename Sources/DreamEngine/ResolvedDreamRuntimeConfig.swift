@@ -144,14 +144,14 @@ public struct ResolvedDreamRuntimeConfig: Equatable, Sendable {
         let provider: ResolvedLLM.Provider = {
             if let p = cli.provider { return p }
             if let p = vaultConfig?.llm.provider,
-               let parsed = ResolvedLLM.Provider(rawValue: p) { return parsed }
+               let parsed = Self.parseProvider(p) { return parsed }
             // settings.llmChoice 是 .mock / .ollama（仅 2 选 1）；云端走
             // vault config 的 keychainItemName 触发 openaiCompat 路径
-            if settings.llmChoice == .mock { return .mock }
-            // ollama（settings 里）— 但如果 vault 显式声明 openaiCompat + keychain，
-            // 走 openaiCompat。简单起见这里走 ollama，openaiCompat 需要 vault config
-            // 显式声明。
-            return .ollama
+            switch settings.llmChoice {
+            case .mock: return .mock
+            case .ollama: return .ollama
+            case .openaiCompat: return .openaiCompat
+            }
         }()
 
         // 2. model / baseURL：CLI > vault > settings (按 provider 类型取)
@@ -240,11 +240,57 @@ public struct ResolvedDreamRuntimeConfig: Equatable, Sendable {
         )
     }
 
+    public func toConsolidationConfig() -> ConsolidationConfig {
+        ConsolidationConfig(
+            redactBeforeConsolidate: privacy.redactBeforeConsolidate,
+            useThreeStepCoT: consolidation.useThreeStepCoT,
+            concurrency: consolidation.concurrency
+        )
+    }
+
+    public func toDecayConfig() -> DecayConfig {
+        DecayConfig(
+            wRecency: decay.wRecency,
+            wFrequency: decay.wFrequency,
+            wLinkage: decay.wLinkage,
+            tauDays: decay.tauDays,
+            freqK: decay.kFrequency,
+            linkL: decay.lLinkage,
+            archiveThreshold: decay.archiveSalienceThreshold,
+            staleDays: decay.archiveStaleDays
+        )
+    }
+
+    public func toDreamConfig(embeddingProvider: EmbeddingProvider? = nil,
+                              embeddingTopK: Int = 5,
+                              embeddingSimilarityThreshold: Double = 0.5) -> DreamConfig {
+        DreamConfig(
+            consolidation: toConsolidationConfig(),
+            decay: toDecayConfig(),
+            embeddingProvider: embeddingProvider,
+            embeddingTopK: embeddingTopK,
+            embeddingSimilarityThreshold: embeddingSimilarityThreshold
+        )
+    }
+
     /// provider 默认 Keychain item 命名
     private static func defaultKeychainItem(for provider: ResolvedLLM.Provider) -> String? {
         switch provider {
         case .mock, .ollama: return nil
         case .openaiCompat: return "com.OmixNet.dreamvault.openai-key"
+        }
+    }
+
+    static func parseProvider(_ raw: String) -> ResolvedLLM.Provider? {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "mock":
+            return .mock
+        case "ollama":
+            return .ollama
+        case "openai", "openai_compat", "openai-compat", "openaicompat":
+            return .openaiCompat
+        default:
+            return ResolvedLLM.Provider(rawValue: raw)
         }
     }
 }

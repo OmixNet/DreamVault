@@ -9,7 +9,7 @@ import Foundation
 /// 2. `frequency` 加新近度衰减 (新参数 `frequencyTauDays = 60`). 4 次强化 = 永生
 ///    修了: `w_f·(1-e^(-n/5))·e^(-dt/freqTau) ≥ 0.15` 在 n=4 时恒成立 (老问题),
 ///    乘 e^(-dt/60) 后 n=4 在 dt=60 天频率地板降到 0.27, 90 天后几乎全衰减.
-public struct DecayConfig {
+public struct DecayConfig: Sendable {
     public var wRecency: Double = 0.5
     public var wFrequency: Double = 0.3
     public var wLinkage: Double = 0.2

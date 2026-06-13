@@ -77,12 +77,16 @@ struct DreamCLI {
             }
         }
         let vault = opts.vaultURL()
-        // P8 修复：包一层 BudgetedLLMProvider 真实记录 LLM 调用
-        // 之前 opts.llmProvider() 直接返回裸 provider，预算一直是"检查器"
-        let (llm, budget) = await opts.budgetedLLMProvider()
-        let git = GitRunner(repoRoot: vault)
-        let cycle = DreamCycle(vaultRoot: vault, llm: llm, git: git, dryRun: dryRun)
         do {
+            let runtime = try await opts.runtimeContext()
+            let git = GitRunner(repoRoot: vault)
+            let cycle = DreamCycle(
+                vaultRoot: vault,
+                llm: runtime.provider,
+                git: git,
+                dryRun: dryRun,
+                config: runtime.dreamConfig
+            )
             // 先把 raw/ 挂为只读（架构第 1 节末段："app 启动时 chmod"）。
             // DreamCycle 内部也会再调一次，这里是 CLI 入口的显式保险——dryRun 也调，
             // 因为 dryRun 仍然跑 gather，可能触发对 raw/ 的潜在写入。
@@ -95,7 +99,7 @@ struct DreamCLI {
             print(humanSummary(outcome))
             // P8: 末尾打预算使用状态
             let summary = await MainActor.run {
-                "budget: today \(budget.todayCount) call(s), $\(String(format: "%.4f", budget.todayCost)) used"
+                "budget: today \(runtime.budgetManager.todayCount) call(s), $\(String(format: "%.4f", runtime.budgetManager.todayCost)) used"
             }
             print(summary)
             _ = summary  // 闭包式用一下避免 unused warning

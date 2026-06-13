@@ -14,6 +14,7 @@ import Foundation
 ///   注释没跟着改。P8 修文档，但**不改默认值**——保持 Settings → Dream 显式开启路径。
 public struct DreamConfig: Sendable {
     public var consolidation: ConsolidationConfig
+    public var decay: DecayConfig
     /// P3-6 follow-up: 矛盾预筛 embedding provider. nil = 不启用 (走老 token/AA 路径).
     /// 真生产建议给 NLEmbeddingProvider (NLEmbedding 系统自带, 离线, 免费).
     public var embeddingProvider: EmbeddingProvider?
@@ -23,10 +24,12 @@ public struct DreamConfig: Sendable {
     public var embeddingSimilarityThreshold: Double
 
     public init(consolidation: ConsolidationConfig = ConsolidationConfig(),
+                decay: DecayConfig = DecayConfig(),
                 embeddingProvider: EmbeddingProvider? = nil,
                 embeddingTopK: Int = 5,
                 embeddingSimilarityThreshold: Double = 0.5) {
         self.consolidation = consolidation
+        self.decay = decay
         self.embeddingProvider = embeddingProvider
         self.embeddingTopK = embeddingTopK
         self.embeddingSimilarityThreshold = embeddingSimilarityThreshold
@@ -323,7 +326,7 @@ public struct DreamCycle {
 
         // — 3. Decay：扫所有记忆算 salience 决定动作 —
         onStage?("decay")
-        let decayer = Decayer()
+        let decayer = Decayer(config: config.decay)
         let decayResults = decayer.evaluateAll(mergedLedger)
         onStage?("decay done: \(decayResults.count) memories evaluated")
 
