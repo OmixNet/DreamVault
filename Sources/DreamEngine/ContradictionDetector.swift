@@ -46,7 +46,70 @@ public struct ContradictionDetector {
         A 与 B 是否矛盾？
         """
         let answer = try await llm.complete(system: system, user: user)
-        return answer.uppercased().contains("CONFLICT")
+        // P3-2: 修评审 §2.4 bug. 老代码 `contains("CONFLICT")` 会把 "NO CONFLICT"
+        // (最自然的否定表述) 判为矛盾. 改首词匹配 + 三种 JSON 输出格式兼容.
+        return Self.parseConflictAnswer(answer)
+    }
+
+    /// P3-2: 解析 LLM 输出的矛盾判定
+    /// - 支持: "CONFLICT" / "OK" / "YES" / "NO" (首词)
+    /// - 支持: JSON {"conflict": true/false}
+    /// - 支持: 含 markdown ```json``` 围栏
+    /// - 修 bug: 不再用 contains("CONFLICT"), 避免 "NO CONFLICT" 被误判
+    public static func parseConflictAnswer(_ answer: String) -> Bool {
+        let cleaned = stripMarkdownFence(answer.trimmingCharacters(in: .whitespacesAndNewlines))
+        // 1) JSON 格式: {"conflict": true} 或 {"conflict": false}
+        if cleaned.hasPrefix("{") {
+            if let data = cleaned.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let v = obj["conflict"] as? Bool { return v }
+                if let v = obj["CONFLICT"] as? Bool { return v }
+            }
+            // JSON parse 失败, fallthrough 到首词
+        }
+        // 2) 首词匹配 (按行 split, 取首行首 token)
+        let firstLine = cleaned.components(separatedBy: .newlines).first ?? cleaned
+        let firstToken = firstLine.components(separatedBy: .whitespaces).first ?? ""
+        let upper = firstToken.uppercased().trimmingCharacters(in: CharacterSet.punctuationCharacters)
+        switch upper {
+        case "CONFLICT", "YES", "TRUE": return true
+        case "OK", "NO", "FALSE", "NIL", "NONE": return false
+        default:
+            // 兜底: 全文找 CONFLICT, 但跳过 "NO CONFLICT" / "NOT A CONFLICT" / "NONE" 否定上下文
+            // 找 CONFLICT 位置, 跟前面 5 词 (15 字符) 内的否定词比较
+            let upper = cleaned.uppercased()
+            if let range = upper.range(of: "CONFLICT") {
+                let prefix = upper[upper.startIndex..<range.lowerBound]
+                // 取最后 5 词 (15 字符窗口)
+                let last5Words = prefix
+                    .components(separatedBy: .whitespacesAndNewlines)
+                    .suffix(5)
+                    .map { $0.trimmingCharacters(in: .punctuationCharacters) }
+                    .filter { !$0.isEmpty }
+                let negatives: Set<String> = ["NO", "NOT", "NONE", "NEVER", "NIL", "ISN'T", "ISNT", "ARENT", "AREN'T"]
+                if last5Words.contains(where: { negatives.contains($0) }) {
+                    return false
+                }
+                return true
+            }
+            return false
+        }
+    }
+
+    /// P3-2: 剥掉 LLM 偶发包的 ```json ... ``` 围栏
+    static func stripMarkdownFence(_ s: String) -> String {
+        var t = s
+        if t.hasPrefix("```") {
+            // 去掉首行 ``` 或 ```json
+            if let nl = t.firstIndex(of: "\n") {
+                t = String(t[t.index(after: nl)...])
+            } else {
+                t = String(t.dropFirst(3))
+            }
+            if t.hasSuffix("```") { t = String(t.dropLast(3)) }
+            t = t.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return t
     }
 
     /// 把一批新教训与现有 durable 记忆比对，就地写入双向 contradicts 链接。
