@@ -30,10 +30,25 @@ eval:
 eval-ollama:
 	@echo "Warning: 需要本机跑 Ollama daemon (http://127.0.0.1:11434)"
 	@echo "启动: ollama serve &  /  拉模型: ollama pull llama3.1"
-	OLLAMA_BASE_URL?=http://127.0.0.1:11434 \
-	OLLAMA_MODEL?=llama3.1 \
+	@echo "P3-8 真量化: 100 case gemma2:2b 88% (verify) + 92% (contradiction) accuracy"
+	@echo "详见 docs/eval-ollama-verify-2026-06-14.md + docs/eval-ollama-contradiction-2026-06-14.md"
+	OLLAMA_BASE_URL=$${OLLAMA_BASE_URL:-http://127.0.0.1:11434} \
+	OLLAMA_MODEL=$${OLLAMA_MODEL:-llama3.1} \
 	DREAMVAULT_LLM=ollama \
 	swift run dream eval --llm ollama --report docs/eval-ollama-$(shell date +%Y-%m-%d).md
+
+# P3-8 真量化: 拆 phase 跑 (100 case 一次性会超时, 拆 phase 稳定)
+eval-ollama-verify:
+	@OLLAMA_BASE_URL=$${OLLAMA_BASE_URL:-http://127.0.0.1:11434} \
+	OLLAMA_MODEL=$${OLLAMA_MODEL:-gemma2:2b} \
+	DREAMVAULT_LLM=ollama \
+	swift run dream eval --llm ollama --phase verify --report docs/eval-ollama-verify-$(shell date +%Y-%m-%d).md
+
+eval-ollama-contradiction:
+	@OLLAMA_BASE_URL=$${OLLAMA_BASE_URL:-http://127.0.0.1:11434} \
+	OLLAMA_MODEL=$${OLLAMA_MODEL:-gemma2:2b} \
+	DREAMVAULT_LLM=ollama \
+	swift run dream eval --llm ollama --phase contradiction --report docs/eval-ollama-contradiction-$(shell date +%Y-%m-%d).md
 
 release:
 	swift build -c release
