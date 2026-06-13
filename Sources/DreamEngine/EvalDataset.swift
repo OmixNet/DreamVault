@@ -585,8 +585,959 @@ public enum EvalDataset {
             groundTruthNote: "同一主题 (dream-engine 技术栈), 不可调和 (Swift 原生 vs React 跨平台). 应 conflict."),
     ]
 
-    /// 30 case 标准评测集
-    public static let standard: [EvalCase] = verifiedTrue + hallucinated + contradictionPairs
+    // MARK: - v0.7.3 扩 100 case: V-11..V-45 verified-true (35 case)
+
+    private static let verifiedTrueExtended: [EvalCase] = [
+        // V-11..V-20: 通用软件 / 工具 (UI / 编程语言 / 数据库)
+        EvalCase(
+            id: "V-11",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：PostgreSQL 14 引入 JSON_TABLE 函数。
+            证据片段：
+            [raw/2024-03-12-postgres-release-notes.md:88] PostgreSQL 14 release notes: SQL/JSON path functions (JSON_TABLE, JSON_VALUE, JSON_QUERY) added.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据明确说 PG 14 加 JSON_TABLE. 应 YES."
+        ),
+        EvalCase(
+            id: "V-12",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Rust 默认禁用 unsafe 块。
+            证据片段：
+            [raw/2024-04-08-rust-book.md:203] Rust 的内存安全保证建立在所有权系统上, unsafe 块需显式标注, 编译器默认不信任任何 unsafe 操作.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 unsafe 需显式标注, 即默认禁用. 应 YES."
+        ),
+        EvalCase(
+            id: "V-13",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：NixOS 用 /nix/store 不可变包管理。
+            证据片段：
+            [raw/2024-05-22-nixos-arch.md:67] NixOS 包存储于只读 /nix/store 目录, 每个包有唯一哈希前缀, 升级/回滚原子化.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 /nix/store 只读 + 唯一哈希. 应 YES."
+        ),
+        EvalCase(
+            id: "V-14",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Kubernetes 1.27 默认启用 sidecar 容器。
+            证据片段：
+            [raw/2024-06-15-k8s-changelog.md:421] K8s 1.27 release notes: sidecar containers graduated to beta, enabled by default.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 1.27 sidecar 默认启用. 应 YES."
+        ),
+        EvalCase(
+            id: "V-15",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：gRPC 用 HTTP/2 + Protocol Buffers。
+            证据片段：
+            [raw/2024-07-03-grpc-intro.md:15] gRPC 默认基于 HTTP/2 传输, 用 Protocol Buffers (proto3) 作接口定义语言.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 HTTP/2 + protobuf. 应 YES."
+        ),
+        EvalCase(
+            id: "V-16",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Redis 7 引入 Redis Functions 替代 Lua eval。
+            证据片段：
+            [raw/2024-08-19-redis-7-release.md:127] Redis 7.0 release notes: Redis Functions (server-side scripting 替代 EVAL) added as stable feature.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 7.0 加 Redis Functions 替代 EVAL. 应 YES."
+        ),
+        EvalCase(
+            id: "V-17",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：SQLite 是无服务器 (serverless) 嵌入式数据库。
+            证据片段：
+            [raw/2024-09-04-sqlite-arch.md:33] SQLite 是进程内库, 无独立 server 进程, 单文件存储, 整个引擎嵌入调用方.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 SQLite 进程内库 + 无 server. 应 YES."
+        ),
+        EvalCase(
+            id: "V-18",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：WebAssembly 1.0 在 2019 年定稿。
+            证据片段：
+            [raw/2024-10-11-wasm-history.md:54] W3C 推荐标准: WebAssembly Core Specification 1.0 (2019-12-05) 成为 W3C Recommendation.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 2019-12 W3C Recommendation. 应 YES."
+        ),
+        EvalCase(
+            id: "V-19",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Tailwind CSS 用 utility-first 范式。
+            证据片段：
+            [raw/2024-11-28-tailwind-philosophy.md:88] Tailwind 文档开篇: utility-first CSS framework, 通过组合原子类 (flex, pt-4, text-center) 构建设计.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 utility-first 原子类. 应 YES."
+        ),
+        EvalCase(
+            id: "V-20",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：OpenTelemetry 合并了 OpenCensus 和 OpenTracing。
+            证据片段：
+            [raw/2024-12-15-otel-history.md:142] OpenTelemetry 是 CNCF 项目, 2019 年由 OpenTracing 和 OpenCensus 合并而成, 统一了 tracing/metrics/logs 三大信号.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 2019 合并 OpenTracing + OpenCensus. 应 YES."
+        ),
+
+        // V-21..V-30: dream-engine 自身 / AI / 机器学习
+        EvalCase(
+            id: "V-21",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：NLEmbeddingProvider 在 zh-Hans 下输出 640 维向量。
+            证据片段：
+            [raw/2026-05-12-nlembedding-test.md:35] 实测 macOS 14 (arm64): NLEmbedding.sentenceEmbedding(for: .simplifiedChinese).dimension = 640, en 模式下 dim=512.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 zh-Hans dim=640 (P3-6 实测). 应 YES."
+        ),
+        EvalCase(
+            id: "V-22",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：SourceRefValidator 拒绝 excerpt 不在源文件连续 substring 的引用。
+            证据片段：
+            [raw/2026-04-08-sourceref-impl.md:118] 闸门设计: excerpt 必须是源文件 body 连续 substring, 否则 rejectedFabricated+=1. 长度 < 5 字符放行 (噪声容差).
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 substring 严格匹配 (P0-3 修复). 应 YES."
+        ),
+        EvalCase(
+            id: "V-23",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Adamic-Adar 关联分公式 = Σ 1/log(degree(w))。
+            证据片段：
+            [raw/2026-03-19-knowledge-graph.md:42] Adamic-Adar(u,v) = Σ over 共同邻居 w of 1/log(degree(w)). 共同邻居多且度数低 → 关联强.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 Adamic-Adar 公式 (KnowledgeGraph 注释). 应 YES."
+        ),
+        EvalCase(
+            id: "V-24",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：CounterBox.addError() 累加 3 段 CoT 失败计数。
+            证据片段：
+            [raw/2026-02-25-threestep-cot.md:88] P3-3 §1.2: analyze/generate/verify 任一步失败 → CounterBox.addError(), 用于日志跟夜报诊断.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 CounterBox.addError 计数 (P3-3 修复). 应 YES."
+        ),
+        EvalCase(
+            id: "V-25",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Decayer 对 decayClass=fast 应用的 staleDays 是 normal 的 1/3。
+            证据片段：
+            [raw/2026-01-30-decay-impl.md:67] P3-7 §2.1 修复: effectiveStaleDays = staleDays × tauMultiplier. fast=0.3 (即 1/3), normal=1.0, slow=3.0.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 fast tauMultiplier=0.3 (P3-7 修复). 应 YES."
+        ),
+        EvalCase(
+            id: "V-26",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：LLMSchema.jsonSchema 走 Ollama 原生 /api/chat + format: json_schema。
+            证据片段：
+            [raw/2026-01-15-llm-schema.md:103] P3-5 §4.2: OllamaNativeProvider 用 /api/chat 端点, format 字段塞 json_schema 字典 (含 enum 约束), 强制 LLM 返结构化 JSON.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 OllamaNativeProvider + format: json_schema (P3-5). 应 YES."
+        ),
+        EvalCase(
+            id: "V-27",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：EvalRunner 跟生产代码用同一套 keyword 解析逻辑。
+            证据片段：
+            [raw/2026-01-10-eval-design.md:55] P3-8 §3 设计: EvalRunner 复用 P3-2 ContradictionDetector 否定词窗口 5 词, 评测跟生产代码用同一套解析, 避免两套 parser 漂移.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 EvalRunner 复用生产解析 (P3-8). 应 YES."
+        ),
+        EvalCase(
+            id: "V-28",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：EmbeddingMerge cosine 阈值 0.85 替代 P3-1 字符 Jaccard 0.6 兜底。
+            证据片段：
+            [raw/2025-12-22-embedding-merge.md:74] P3-6 §1.1 升级: 同质合并判定 embedding cosine ≥ 0.85 OR jaccard ≥ 0.6 双信号 OR. NLEmbedding 整体偏高 (机器学习 vs 苹果水果 0.81), 阈值 0.85 平衡.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 cosine 0.85 OR jaccard 0.6 (P3-6). 应 YES."
+        ),
+        EvalCase(
+            id: "V-29",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Gatherer chunkBody 按 markdown H2 (##) 切分长 raw。
+            证据片段：
+            [raw/2025-12-08-gatherer-chunking.md:91] P3-4 §2.6 修复: chunkBody 短 raw (≤ maxChunkChars=4000) 不切, 长 raw 按 H2 split 保留结构语义, sourceLine 真实化.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 H2 split + maxChunkChars 4000 (P3-4). 应 YES."
+        ),
+        EvalCase(
+            id: "V-30",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：DreamCycle.mergeSimilar 接受 EmbeddingProvider? 参数。
+            证据片段：
+            [raw/2025-11-15-dreamcycle-merge.md:128] P3-6 §1.1: mergeSimilar(newAccepted:existing:now:threshold:embeddingProvider:) — embedding 可用时走 cosine, 不可用时 fallback P3-1 Jaccard.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 mergeSimilar 接受 embeddingProvider (P3-6). 应 YES."
+        ),
+
+        // V-31..V-45: 网络协议 / 操作系统 / 安全
+        EvalCase(
+            id: "V-31",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：TLS 1.3 移除 CBC 模式密码套件。
+            证据片段：
+            [raw/2024-08-20-tls13-rfc.md:8] RFC 8446: TLS 1.3 removes static RSA, CBC mode cipher suites, and MD5/SHA-1 hash. 仅保留 (EC)DHE 密钥交换 + AEAD.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 TLS 1.3 移除 CBC (RFC 8446). 应 YES."
+        ),
+        EvalCase(
+            id: "V-32",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：eBPF 程序运行在内核沙箱中。
+            证据片段：
+            [raw/2024-09-10-ebpf-arch.md:45] eBPF programs execute in an in-kernel sandbox (verifier), 防止任意内核读/写/系统调用, 仅允许受限 helper 调用.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 eBPF 内核沙箱 + verifier. 应 YES."
+        ),
+        EvalCase(
+            id: "V-33",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：HTTP/3 底层用 QUIC 协议（基于 UDP）。
+            证据片段：
+            [raw/2024-10-05-http3-rfc.md:30] RFC 9114: HTTP/3 用 QUIC (RFC 9000) 作传输层, QUIC 本身基于 UDP, 集成 TLS 1.3.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 HTTP/3 走 QUIC/UDP. 应 YES."
+        ),
+        EvalCase(
+            id: "V-34",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Linux cgroups v2 用统一层级 (unified hierarchy)。
+            证据片段：
+            [raw/2024-11-02-cgroups-v2.md:78] cgroups v2 (Linux 5.x+) 默认 unified hierarchy, 单根 cgroup 树, controller 选择性启用. v1 是多树混乱.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 cgroups v2 unified hierarchy. 应 YES."
+        ),
+        EvalCase(
+            id: "V-35",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Zig 语言手动内存管理，无 runtime GC。
+            证据片段：
+            [raw/2024-12-19-zig-overview.md:55] Zig 文档: No hidden control flow, no hidden memory allocations. Memory management is explicit, 无内置 GC.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 Zig 无 GC. 应 YES."
+        ),
+        EvalCase(
+            id: "V-36",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：WireGuard 用 Curve25519 密钥交换。
+            证据片段：
+            [raw/2025-01-22-wireguard-crypto.md:112] WireGuard 协议: Noise_IKpsk2 handshake, Curve25519 for ECDH, ChaCha20-Poly1305 for symmetric crypto.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 WireGuard Curve25519 + ChaCha20. 应 YES."
+        ),
+        EvalCase(
+            id: "V-37",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：LLVM 项目用 Apache 2.0 + LLVM Exceptions 双许可。
+            证据片段：
+            [raw/2025-02-14-llvm-license.md:33] LLVM 仓库 LICENSE.txt: Apache 2.0 with LLVM Exceptions. Exceptions 让用户静态/动态链接 LLVM 不强制开源自家代码.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 LLVM Apache 2.0 + LLVM Exceptions. 应 YES."
+        ),
+        EvalCase(
+            id: "V-38",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Bun 是用 Zig 编写的 JavaScript 运行时。
+            证据片段：
+            [raw/2025-03-08-bun-arch.md:67] Bun 用 Zig 编写, 内置 JavaScriptCore 引擎 (来自 WebKit), 替代/补充 Node.js, 速度比 Node 快数倍.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 Bun 用 Zig + JavaScriptCore. 应 YES."
+        ),
+        EvalCase(
+            id: "V-39",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Swift 5.5 引入 async/await + structured concurrency。
+            证据片段：
+            [raw/2025-04-12-swift-55.md:88] Swift 5.5 release notes: async/await syntax, structured concurrency (Task, TaskGroup, AsyncStream). Actor model 加并发隔离.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 Swift 5.5 async/await + actors. 应 YES."
+        ),
+        EvalCase(
+            id: "V-40",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：GitHub Actions 用 YAML workflow 文件定义 CI。
+            证据片段：
+            [raw/2025-05-05-gh-actions.md:144] GitHub Actions 文档: .github/workflows/*.yml 定义 workflow, jobs 串/并行执行 steps on runner.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 GitHub Actions 用 YAML. 应 YES."
+        ),
+        EvalCase(
+            id: "V-41",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：OAuth 2.0 不定义签名算法，仅依赖底层 TLS。
+            证据片段：
+            [raw/2025-06-20-oauth2-rfc.md:18] RFC 6749: OAuth 2.0 本身不签 access token (signed tokens 是 JWT 扩展), 传输层依赖 TLS 保证机密性.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 OAuth 2.0 不签 token, 靠 TLS. 应 YES."
+        ),
+        EvalCase(
+            id: "V-42",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：BSD 3-Clause 比 MIT 多一条"非 endorsement"条款。
+            证据片段：
+            [raw/2025-07-15-bsd-license.md:97] BSD 3-Clause 第三条: The name of the author may not be used to endorse products derived from this software without prior written permission. 阻止用作者背书.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 BSD-3 第三条 non-endorsement. 应 YES."
+        ),
+        EvalCase(
+            id: "V-43",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Raft 共识算法用 leader election + log replication。
+            证据片段：
+            [raw/2025-08-10-raft-paper.md:50] Raft 论文: 拆成 leader election, log replication, safety 三子问题, 比 Paxos 易于理解和实现.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 Raft 拆 3 子问题. 应 YES."
+        ),
+        EvalCase(
+            id: "V-44",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Apple Silicon 用统一内存架构 (UMA) 共享 CPU/GPU 内存。
+            证据片段：
+            [raw/2025-09-03-m1-uma.md:78] Apple M1 tech overview: Unified Memory Architecture, CPU/GPU/Neural Engine 共享同一物理内存, 减少数据拷贝.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 Apple Silicon UMA. 应 YES."
+        ),
+        EvalCase(
+            id: "V-45",
+            category: .verifiedTrue,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Cloudflare Workers 用 isolates 隔离请求而非进程。
+            证据片段：
+            [raw/2025-10-15-workers-arch.md:34] Cloudflare Workers 文档: V8 isolates 隔离每个请求, 启动 <5ms, 共享 OS 进程, 无冷启动.
+            """,
+            expectedVerdict: .yes,
+            groundTruthNote: "证据说 Workers V8 isolates. 应 YES."
+        ),
+    ]
+
+    // MARK: - v0.7.3 扩 H-11..H-30 hallucinated (20 case)
+
+    private static let hallucinatedExtended: [EvalCase] = [
+        // H-11..H-20: 通用软件 / 框架
+        EvalCase(
+            id: "H-11",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：PostgreSQL 17 完全移除 WAL 机制改用 in-memory replication。
+            证据片段：
+            [raw/2024-03-12-postgres-release-notes.md:88] PostgreSQL 14 release notes: SQL/JSON path functions (JSON_TABLE, JSON_VALUE, JSON_QUERY) added.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 PG 14 加 JSON_TABLE, 没说 PG 17 移除 WAL. PG 17 没移除 WAL. 应 NO."
+        ),
+        EvalCase(
+            id: "H-12",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Rust 编译器 2025 改用 C++ 重写。
+            证据片段：
+            [raw/2024-04-08-rust-book.md:203] Rust 的内存安全保证建立在所有权系统上, unsafe 块需显式标注, 编译器默认不信任任何 unsafe 操作.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据没说 Rust 改 C++. 凭空捏造. 应 NO."
+        ),
+        EvalCase(
+            id: "H-13",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：NixOS 在 Windows 上原生运行无需 WSL。
+            证据片段：
+            [raw/2024-05-22-nixos-arch.md:67] NixOS 包存储于只读 /nix/store 目录, 每个包有唯一哈希前缀, 升级/回滚原子化.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 NixOS 存储机制, 没说 Windows 兼容. 凭空捏造. 应 NO."
+        ),
+        EvalCase(
+            id: "H-14",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Kubernetes 1.27 弃用所有 CRD。
+            证据片段：
+            [raw/2024-06-15-k8s-changelog.md:421] K8s 1.27 release notes: sidecar containers graduated to beta, enabled by default.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 sidecar 默认启用, 没说弃用 CRD. 应 NO."
+        ),
+        EvalCase(
+            id: "H-15",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：gRPC 4.0 改用 JSON-RPC 协议。
+            证据片段：
+            [raw/2024-07-03-grpc-intro.md:15] gRPC 默认基于 HTTP/2 传输, 用 Protocol Buffers (proto3) 作接口定义语言.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 gRPC 走 protobuf, 没说改 JSON-RPC. 应 NO."
+        ),
+        EvalCase(
+            id: "H-16",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Redis 7 完全删除 stream 数据类型。
+            证据片段：
+            [raw/2024-08-19-redis-7-release.md:127] Redis 7.0 release notes: Redis Functions (server-side scripting 替代 EVAL) added as stable feature.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 7.0 加 Functions, 没说删除 stream. 应 NO."
+        ),
+        EvalCase(
+            id: "H-17",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：SQLite 4 改用 client-server 架构。
+            证据片段：
+            [raw/2024-09-04-sqlite-arch.md:33] SQLite 是进程内库, 无独立 server 进程, 单文件存储, 整个引擎嵌入调用方.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 SQLite 进程内无 server, 没说改 client-server. 应 NO."
+        ),
+        EvalCase(
+            id: "H-18",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：WebAssembly 在 iOS 上被 Apple 永久禁用。
+            证据片段：
+            [raw/2024-10-11-wasm-history.md:54] W3C 推荐标准: WebAssembly Core Specification 1.0 (2019-12-05) 成为 W3C Recommendation.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 2019 W3C 标准, 没说 iOS 禁用. 应 NO."
+        ),
+        EvalCase(
+            id: "H-19",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Tailwind CSS 4 改用 CSS-in-JS 运行时编译。
+            证据片段：
+            [raw/2024-11-28-tailwind-philosophy.md:88] Tailwind 文档开篇: utility-first CSS framework, 通过组合原子类 (flex, pt-4, text-center) 构建设计.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 utility-first, 没说改 CSS-in-JS. 应 NO."
+        ),
+        EvalCase(
+            id: "H-20",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：OpenTelemetry 5 弃用 metrics 只保留 tracing。
+            证据片段：
+            [raw/2024-12-15-otel-history.md:142] OpenTelemetry 是 CNCF 项目, 2019 年由 OpenTracing 和 OpenCensus 合并而成, 统一了 tracing/metrics/logs 三大信号.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说统一三大信号, 没说弃用 metrics. 应 NO."
+        ),
+
+        // H-21..H-30: dream-engine 自身 / AI
+        EvalCase(
+            id: "H-21",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：NLEmbeddingProvider 在 zh-Hans 下输出 1024 维向量。
+            证据片段：
+            [raw/2026-05-12-nlembedding-test.md:35] 实测 macOS 14 (arm64): NLEmbedding.sentenceEmbedding(for: .simplifiedChinese).dimension = 640, en 模式下 dim=512.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 dim=640 不是 1024. 凭空捏造. 应 NO."
+        ),
+        EvalCase(
+            id: "H-22",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：SourceRefValidator 使用 subsequence 模糊匹配 excerpt。
+            证据片段：
+            [raw/2026-04-08-sourceref-impl.md:118] 闸门设计: excerpt 必须是源文件 body 连续 substring, 否则 rejectedFabricated+=1. 长度 < 5 字符放行 (噪声容差).
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 substring (连续), 结论说 subsequence (模糊). 反. 应 NO."
+        ),
+        EvalCase(
+            id: "H-23",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Adamic-Adar 关联分公式基于 PageRank 迭代。
+            证据片段：
+            [raw/2026-03-19-knowledge-graph.md:42] Adamic-Adar(u,v) = Σ over 共同邻居 w of 1/log(degree(w)). 共同邻居多且度数低 → 关联强.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 1/log(degree) 求和, 没说 PageRank. 应 NO."
+        ),
+        EvalCase(
+            id: "H-24",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Consolidator 在 verify 阶段使用 contains("YES") 严格匹配。
+            证据片段：
+            [raw/2026-02-25-threestep-cot.md:88] P3-3 §1.2: analyze/generate/verify 任一步失败 → CounterBox.addError(), 用于日志跟夜报诊断.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 CounterBox 计数, 没说 verify 走 contains(\"YES\"). P3-5 改造后 verify 走 StructuredParser 主路径, 老 keyword 是 fallback. 应 NO (主要错误: 证据无关)."
+        ),
+        EvalCase(
+            id: "H-25",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Decayer 对 decayClass=fast 的 effectiveStaleDays 是 1.5x normal。
+            证据片段：
+            [raw/2026-01-30-decay-impl.md:67] P3-7 §2.1 修复: effectiveStaleDays = staleDays × tauMultiplier. fast=0.3 (即 1/3), normal=1.0, slow=3.0.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 fast=0.3 (1/3), 结论说 1.5x. 反. 应 NO."
+        ),
+        EvalCase(
+            id: "H-26",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：OllamaNativeProvider 走 OpenAI 兼容的 /v1/chat/completions 端点。
+            证据片段：
+            [raw/2026-01-15-llm-schema.md:103] P3-5 §4.2: OllamaNativeProvider 用 /api/chat 端点, format 字段塞 json_schema 字典 (含 enum 约束), 强制 LLM 返结构化 JSON.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 /api/chat, 结论说 /v1/chat/completions (那是老 OllamaProvider OpenAI 兼容). 应 NO."
+        ),
+        EvalCase(
+            id: "H-27",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：EvalRunner 跑全 30 case 返 P/R/F1 = 100% 准确。
+            证据片段：
+            [raw/2026-01-10-eval-design.md:55] P3-8 §3 设计: EvalRunner 复用 P3-2 ContradictionDetector 否定词窗口 5 词, 评测跟生产代码用同一套解析, 避免两套 parser 漂移.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 EvalRunner 跟生产同款解析, 没说 100% 准确. mock provider 实测 30% 准确. 应 NO."
+        ),
+        EvalCase(
+            id: "H-28",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：EmbeddingMerge cosine 阈值 0.7 替代 P3-1 字符 Jaccard 0.6。
+            证据片段：
+            [raw/2025-12-22-embedding-merge.md:74] P3-6 §1.1 升级: 同质合并判定 embedding cosine ≥ 0.85 OR jaccard ≥ 0.6 双信号 OR. NLEmbedding 整体偏高 (机器学习 vs 苹果水果 0.81), 阈值 0.85 平衡.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 0.85 (因 0.81 误合), 结论说 0.7. 反. 应 NO."
+        ),
+        EvalCase(
+            id: "H-29",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：Gatherer chunkBody 按 H1 (#) 切分长 raw。
+            证据片段：
+            [raw/2025-12-08-gatherer-chunking.md:91] P3-4 §2.6 修复: chunkBody 短 raw (≤ maxChunkChars=4000) 不切, 长 raw 按 H2 split 保留结构语义, sourceLine 真实化.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 H2 (##), 结论说 H1 (#). 反. 应 NO."
+        ),
+        EvalCase(
+            id: "H-30",
+            category: .hallucinated,
+            phase: .verify,
+            systemPrompt: "你是严格的事实校验器。只依据提供的证据片段判断结论是否成立。证据未明确支撑就回答 NO。只输出 YES 或 NO。",
+            userPrompt: """
+            结论：DreamCycle.mergeSimilar 在 embedding 不可用时直接抛错。
+            证据片段：
+            [raw/2025-11-15-dreamcycle-merge.md:128] P3-6 §1.1: mergeSimilar(newAccepted:existing:now:threshold:embeddingProvider:) — embedding 可用时走 cosine, 不可用时 fallback P3-1 Jaccard.
+            """,
+            expectedVerdict: .no,
+            groundTruthNote: "证据说 fallback Jaccard, 结论说抛错. 反. 应 NO."
+        ),
+    ]
+
+    // MARK: - v0.7.3 扩 C-11..C-25 contradiction (15 case)
+
+    private static let contradictionPairsExtended: [EvalCase] = [
+        EvalCase(
+            id: "C-11",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: Rust 编译器用 Rust 编写 (rustc 自举).
+            知识 B: Rust 编译器用 C++ 编写.
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (rustc 实现语言), 不可调和 (Rust vs C++). 应 conflict."
+        ),
+        EvalCase(
+            id: "C-12",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: PostgreSQL 默认端口 5432.
+            知识 B: PostgreSQL 默认端口 3306.
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (PG 端口), 数字不同. 应 conflict."
+        ),
+        EvalCase(
+            id: "C-13",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: K8s 1.27 启用 sidecar 容器 (默认).
+            知识 B: K8s 1.27 禁用 sidecar 容器 (opt-in).
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (K8s 1.27 sidecar), 默认行为相反. 应 conflict."
+        ),
+        EvalCase(
+            id: "C-14",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: gRPC 用 HTTP/2 + Protocol Buffers.
+            知识 B: gRPC 用 HTTP/1.1 + JSON.
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (gRPC 协议栈), 不可调和. 应 conflict."
+        ),
+        EvalCase(
+            id: "C-15",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: SQLite 是无 server 进程内嵌入式数据库.
+            知识 B: SQLite 是 client-server 架构独立守护进程.
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (SQLite 架构), 嵌入式 vs client-server 互斥. 应 conflict."
+        ),
+        EvalCase(
+            id: "C-16",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: dream-engine 用 Swift 6.3 + SwiftUI 编写, 专攻 macOS.
+            知识 B: dream-engine 用 Rust 编写, 跨平台 (macOS / Windows / Linux).
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (dream-engine 实现语言 + 平台), 不可调和. 应 conflict."
+        ),
+        EvalCase(
+            id: "C-17",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: Swift 5.5 引入 async/await + actors (structured concurrency).
+            知识 B: Swift 5.5 移除 async/await, 仅保留 GCD.
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (Swift 5.5 并发), 不可调和. 应 conflict."
+        ),
+        EvalCase(
+            id: "C-18",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: NLEmbeddingProvider zh-Hans 模式输出 640 维向量.
+            知识 B: NLEmbeddingProvider zh-Hans 模式输出 1024 维向量.
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (NLEmbeddingProvider zh-Hans dim), 数字不同. 应 conflict."
+        ),
+        EvalCase(
+            id: "C-19",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: Decayer 对 fast decayClass 应用 effectiveStaleDays = 27 天.
+            知识 B: Decayer 对 fast decayClass 应用 effectiveStaleDays = 90 天 (跟 normal 一样).
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (fast effectiveStaleDays), 27 vs 90 不可调和. P3-7 修复后 fast=27, 老代码=90. 应 conflict."
+        ),
+        EvalCase(
+            id: "C-20",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: Gatherer chunkBody 按 H2 (##) 切分长 raw.
+            知识 B: Gatherer chunkBody 按 H1 (#) 切分长 raw.
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (Gatherer 切分级别), H2 vs H1 互斥. 应 conflict."
+        ),
+        EvalCase(
+            id: "C-21",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: SourceRefValidator 要求 excerpt 是源文件 body 连续 substring.
+            知识 B: SourceRefValidator 接受 excerpt 是 subsequence 模糊匹配 (非连续).
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (SourceRefValidator excerpt 匹配), substring vs subsequence 不可调和. 应 conflict."
+        ),
+        EvalCase(
+            id: "C-22",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: OllamaNativeProvider 走 /api/chat 端点 + format: json_schema.
+            知识 B: OllamaNativeProvider 走 /v1/chat/completions 端点 (OpenAI 兼容).
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (OllamaNativeProvider 端点), 不可调和. 应 conflict."
+        ),
+        EvalCase(
+            id: "C-23",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: EmbeddingMerge 阈值 cosine ≥ 0.85 OR jaccard ≥ 0.6 双信号 OR.
+            知识 B: EmbeddingMerge 阈值 cosine ≥ 0.7 (单信号, 无 jaccard 兜底).
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (EmbeddingMerge 阈值), 双信号 OR vs 单信号. 应 conflict."
+        ),
+        EvalCase(
+            id: "C-24",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: DreamConfig.productionDefault 默认开启 NLEmbeddingProvider (macOS 12+).
+            知识 B: DreamConfig.productionDefault 默认不启用 embedding provider (用户须显式配).
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .conflict,
+            groundTruthNote: "同主题 (productionDefault embedding 策略), 默认开 vs 默认关不可调和. P3-6 follow-up v0.7.2 选 A. 应 conflict."
+        ),
+        EvalCase(
+            id: "C-25",
+            category: .contradictionPair,
+            phase: .contradiction,
+            systemPrompt: "你判断两条知识是否互相矛盾（不能同时为真）。仅当它们就同一主题给出不可调和的结论时才算矛盾。主题不同、或只是侧重不同、或可同时成立，都不算矛盾。只输出 CONFLICT 或 OK。",
+            userPrompt: """
+            知识 A: 同一主题社区 (e.g. SwiftUI 群) 在 KnowledgeGraph 共享 1 个 source file → 共享 1 个入边 (Adamic-Adar).
+            知识 B: 同一主题社区跨多个 source file 也能通过 embedding cosine 跨文件连边 (KnowledgeGraph.semanticEdges).
+
+            A 与 B 是否矛盾？
+            """,
+            expectedVerdict: .ok,
+            groundTruthNote: "主题相关但不矛盾 — A 说同 source file 内 Adamic-Adar, B 说跨 source file embedding. 两个独立信号互补. 应 OK."
+        ),
+    ]
+
+    /// 100 case 标准评测集 (30 + 70 extended, v0.7.3)
+    public static let standard: [EvalCase] =
+        verifiedTrue + verifiedTrueExtended +
+        hallucinated + hallucinatedExtended +
+        contradictionPairs + contradictionPairsExtended
 
     /// 按 phase 拆开 (verify / contradiction)
     public static func cases(for phase: EvalPhase) -> [EvalCase] {

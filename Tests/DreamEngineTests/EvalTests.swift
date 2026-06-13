@@ -3,28 +3,28 @@ import XCTest
 
 /// P3-8 评审 §3 修复: 金标评测集 + runner.
 /// 覆盖:
-/// - EvalDataset 30 cases 完整性 (10 per category, ID 唯一, 期望 verdict 跟 phase 对齐)
+/// - EvalDataset 100 cases 完整性 (45 verified-true / 30 hallucinated / 25 contradiction pairs)
 /// - EvalRunner 跑 mock LLM provider, 算 P/R/F1, 错 case 列表
 /// - EvalReportMarkdown 渲染 (总 P/R/F1 + 按 phase/category 拆 + 全 case 表)
 final class EvalTests: XCTestCase {
 
     // MARK: - EvalDataset 完整性
 
-    /// 1. 总 30 case (10 per category)
-    func testEvalDataset_30Cases_10PerCategory() {
-        XCTAssertEqual(EvalDataset.standard.count, 30, "总 30 case (评审 §3 修复)")
+    /// 1. 总 100 case (45 verified-true / 30 hallucinated / 25 contradiction pairs)
+    func testEvalDataset_100Cases_breakdown() {
+        XCTAssertEqual(EvalDataset.standard.count, 100, "总 100 case (v0.7.3 扩)")
         let verified = EvalDataset.standard.filter { $0.category == .verifiedTrue }
         let halluc = EvalDataset.standard.filter { $0.category == .hallucinated }
         let contra = EvalDataset.standard.filter { $0.category == .contradictionPair }
-        XCTAssertEqual(verified.count, 10, "10 verified-true")
-        XCTAssertEqual(halluc.count, 10, "10 hallucinated")
-        XCTAssertEqual(contra.count, 10, "10 contradiction pairs")
+        XCTAssertEqual(verified.count, 45, "45 verified-true (10 旧 + 35 extended)")
+        XCTAssertEqual(halluc.count, 30, "30 hallucinated (10 旧 + 20 extended)")
+        XCTAssertEqual(contra.count, 25, "25 contradiction pairs (10 旧 + 15 extended)")
     }
 
     /// 2. ID 唯一 (防 ground truth 漂移)
     func testEvalDataset_uniqueCaseIDs() {
         let ids = EvalDataset.standard.map { $0.id }
-        XCTAssertEqual(Set(ids).count, ids.count, "30 case ID 必须唯一")
+        XCTAssertEqual(Set(ids).count, ids.count, "100 case ID 必须唯一")
     }
 
     /// 3. expected verdict 跟 phase 对齐 (verify 应仅 YES/NO, contradiction 应仅 OK/CONFLICT/AMBIGUOUS)
@@ -64,11 +64,11 @@ final class EvalTests: XCTestCase {
 
     // MARK: - EvalRunner 跑 mock provider
 
-    /// 6. MockLLMProvider 跑全 30 case (keyword 解析) - 至少跑通不抛
+    /// 6. MockLLMProvider 跑全 100 case (keyword 解析) - 至少跑通不抛
     func testEvalRunner_runsWithMockProvider_doesNotThrow() async {
         let runner = EvalRunner(provider: MockLLMProvider())
         let report = await runner.run()
-        XCTAssertEqual(report.caseResults.count, 30, "跑 30 case")
+        XCTAssertEqual(report.caseResults.count, 100, "跑 100 case")
     }
 
     /// 7. MockLLMProvider 跑至少 1 个 verified-true case 应该 verified
@@ -83,8 +83,8 @@ final class EvalTests: XCTestCase {
         // 所以本测试只验证 mock 能跑通, 不强求 P/R/F1
         let total = report.aggregate()
         FileHandle.standardError.write(Data(
-            "[test] mock 跑 30 case: \(total.correct) correct / \(total.total) total, \(total.ambiguousCount) ambiguous\n".utf8))
-        XCTAssertGreaterThanOrEqual(total.total, 30)
+            "[test] mock 跑 100 case: \(total.correct) correct / \(total.total) total, \(total.ambiguousCount) ambiguous\n".utf8))
+        XCTAssertGreaterThanOrEqual(total.total, 100)
     }
 
     /// 8. 静态 mock LLM 返 "YES" → 全 verified-true 应正确, hallucinated 应错
