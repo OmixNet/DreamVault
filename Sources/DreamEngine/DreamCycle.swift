@@ -236,6 +236,23 @@ public struct DreamCycle {
                 }
             }
 
+            // — 2c. P3-1: 同质合并 (durable 可达路径) —
+            // 新教训 vs 现有 durable 比字符 trigram Jaccard, 命中阈值 (>= 0.5) 则
+            // 把新 source 追加进现有 durable, 不新建条目. 这样 2 个 raw 文件分两晚
+            // 处理时, ledger 里是 1 条 durable (2 sources) 而非 2 条 candidate.
+            if !newAccepted.isEmpty {
+                let dur = mergedLedger.memories.filter { $0.status == .durable }
+                if !dur.isEmpty {
+                    let result = Self.mergeSimilar(
+                        newAccepted: newAccepted,
+                        existing: mergedLedger.memories
+                    )
+                    newAccepted = result.newAccepted
+                    mergedLedger.memories = result.updatedExisting
+                    onStage?("merge: \(result.mergeCount) pairs merged into existing durable")
+                }
+            }
+
             // 把新教训合并到 ledger
             for m in newAccepted {
                 if !mergedLedger.memories.contains(where: { $0.id == m.id }) {
@@ -345,5 +362,65 @@ public struct DreamCycle {
         f.timeZone = TimeZone.current
         f.locale = Locale(identifier: "en_US_POSIX")
         return f.string(from: now)
+    }
+
+    // MARK: - P3-1: 同质合并 (durable 可达路径)
+
+    /// 新教训跟现有 memory 比字符 trigram Jaccard 相似度, 命中阈值则合并到现有条目.
+    /// - Returns: (更新后的新教训列表, merge 次数)
+    ///   - 被合并的"新教训"会被从返回列表移除 (它的 source 进了现有条目)
+    ///   - 现有条目的 sources 累加 (去重), lastAccess 更新到 now, status 自动重 classify
+    public static func mergeSimilar(newAccepted: [Memory],
+                                    existing: [Memory],
+                                    now: Date = Date(),
+                                    threshold: Double = TextSimilarity.mergeThreshold
+    ) -> (newAccepted: [Memory], updatedExisting: [Memory], mergeCount: Int) {
+        var remaining = newAccepted
+        var updatedExisting = existing
+        var mergeCount = 0
+        // 预排序 existing: 只跟 status==.durable 比. (candidate 暂不互相合并,
+        // 等 §1.1 修复主线 — durable 是 2 源升级目标, candidate 之间合并会变难)
+        let durIdx = updatedExisting.enumerated()
+            .filter { $0.element.status == .durable }
+            .map { $0.offset }
+        guard !durIdx.isEmpty else { return (remaining, updatedExisting, 0) }
+
+        var i = 0
+        while i < remaining.count {
+            let newM = remaining[i]
+            var merged = false
+            for idx in durIdx {
+                let exist = updatedExisting[idx]
+                let sim = TextSimilarity.jaccard(newM.text, exist.text)
+                if sim >= threshold {
+                    // 合并: sources 累加去重, lastAccess 更新, status 重 classify
+                    var mergedSources = exist.sources
+                    for s in newM.sources {
+                        if !mergedSources.contains(where: { $0.file == s.file && $0.line == s.line }) {
+                            mergedSources.append(s)
+                        }
+                    }
+                    var updated = exist
+                    updated.sources = mergedSources
+                    updated.lastAccess = now
+                    updated.reinforceCount += 1
+                    // 重新 classify (sources 多了, 状态可能升)
+                    let distinctSrc = Set(mergedSources.map { $0.file }).count
+                    if distinctSrc >= 2 { updated.status = .durable }
+                    else if distinctSrc >= 1 { updated.status = .candidate }
+                    updatedExisting[idx] = updated
+                    mergeCount += 1
+                    merged = true
+                    break  // 一条新教训只合并一次 (跟最相似的现有条目)
+                }
+            }
+            if merged {
+                remaining.remove(at: i)
+                // 不增 i, 下一条顶上来
+            } else {
+                i += 1
+            }
+        }
+        return (remaining, updatedExisting, mergeCount)
     }
 }
