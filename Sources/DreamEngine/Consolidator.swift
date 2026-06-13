@@ -145,6 +145,19 @@ public struct Consolidator {
         这些证据是否支撑该结论？
         """
         let answer = try await callLLMWithRetry(system: system, user: user)
+        // P3-5 follow-up: 走 StructuredParser 拿 VerifyResponse.verdict.
+        // 失败 fallback 老 keyword 解析 (Ollama 真实模型偶尔 schema 出格, 老路径兜底).
+        return Self.parseVerifyAnswer(answer)
+    }
+
+    /// P3-5 follow-up: 解析 LLM 输出的 verify 判定.
+    /// 优先 StructuredParser 拿 `VerifyResponse` (YES/NO enum 约束).
+    /// 失败 fallback 老 `contains("YES")` keyword 解析 (跟老实现兼容).
+    public static func parseVerifyAnswer(_ answer: String) -> Bool {
+        if let verified = try? StructuredParser.parse(answer, as: VerifyResponse.self, schema: .verify) {
+            return verified.verdict == .yes
+        }
+        // fallback: keyword 解析 (老路径, 跟 P3-2 否定词窗口同款容错)
         return answer.uppercased().contains("YES")
     }
 
@@ -531,27 +544,59 @@ public struct Consolidator {
     // MARK: - JSON 解析小工具（容错：LLM 偶尔会裹 markdown ```json``` 块）
 
     static func parseAnalysis(_ raw: String) throws -> Analysis {
-        let cleaned = stripMarkdownFence(raw)
-        guard let data = cleaned.data(using: .utf8),
-              let a = try? JSONDecoder().decode(Analysis.self, from: data) else {
-            throw Consolidate3StepError.analysisParseFailed(cleaned.prefix(200).description)
+        // P3-5 follow-up: 优先 StructuredParser 走 `AnalysisResponse` schema (analyze 阶段).
+        // 失败 fallback 老路径 (跟 P3-5 schema 字段一致, 解析老格式 JSON 仍兼容).
+        do {
+            let response = try StructuredParser.parse(raw, as: AnalysisResponse.self, schema: .analyze)
+            return Analysis(
+                keyEntities: response.keyEntities,
+                keyConcepts: response.keyConcepts,
+                tensionsWithExisting: response.tensionsWithExisting,
+                recommendedLessonTexts: response.recommendedLessonTexts,
+                reasoning: response.reasoning,
+                recommendedKind: response.recommendedKind
+            )
+        } catch {
+            // fallback: 老 Analysis 字段完全一致, 走老解析兜底
+            let cleaned = stripMarkdownFence(raw)
+            guard let data = cleaned.data(using: .utf8),
+                  let a = try? JSONDecoder().decode(Analysis.self, from: data) else {
+                throw Consolidate3StepError.analysisParseFailed(cleaned.prefix(200).description)
+            }
+            return a
         }
-        return a
     }
 
     static func parseDrafts(_ raw: String) throws -> [MemoryDraft] {
-        let cleaned = stripMarkdownFence(raw)
-        guard let data = cleaned.data(using: .utf8) else {
+        // P3-5 follow-up: 优先 StructuredParser 走 `DraftListResponse` schema (generate 阶段).
+        // 失败 fallback 老路径 (跟老 MemoryDraft 字段兼容, 解析老格式 JSON).
+        do {
+            let response = try StructuredParser.parse(raw, as: DraftListResponse.self, schema: .generate)
+            let drafts = (response.drafts ?? []).map { item in
+                MemoryDraft(
+                    text: item.text,
+                    sourceFile: item.sourceFile,
+                    sourceLine: item.sourceLine,
+                    sourceExcerpt: item.sourceExcerpt,
+                    decayClassRaw: item.decayClassRaw,
+                    kindRaw: item.kind
+                )
+            }
+            return drafts
+        } catch {
+            // fallback: 老解析 (容错数组/对象)
+            let cleaned = stripMarkdownFence(raw)
+            guard let data = cleaned.data(using: .utf8) else {
+                throw Consolidate3StepError.draftsParseFailed(cleaned.prefix(200).description)
+            }
+            if let arr = try? JSONDecoder().decode([MemoryDraft].self, from: data) {
+                return arr
+            }
+            if let obj = try? JSONDecoder().decode(DraftEnvelope.self, from: data) {
+                return obj.drafts ?? []
+            }
             throw Consolidate3StepError.draftsParseFailed(cleaned.prefix(200).description)
         }
-        // 容错：可能返回对象或数组。对象里包 drafts 字段也接受
-        if let arr = try? JSONDecoder().decode([MemoryDraft].self, from: data) {
-            return arr
-        }
-        if let obj = try? JSONDecoder().decode(DraftEnvelope.self, from: data) {
-            return obj.drafts ?? []
-        }
-        throw Consolidate3StepError.draftsParseFailed(cleaned.prefix(200).description)
     }
 
     private struct DraftEnvelope: Codable {

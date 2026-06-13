@@ -57,6 +57,11 @@ public struct ContradictionDetector {
     /// - 支持: 含 markdown ```json``` 围栏
     /// - 修 bug: 不再用 contains("CONFLICT"), 避免 "NO CONFLICT" 被误判
     public static func parseConflictAnswer(_ answer: String) -> Bool {
+        // P3-5 follow-up: 优先 StructuredParser 走 `ConflictResponse` schema (conflict 阶段).
+        // 失败 fallback 老 keyword 解析 (Ollama 真实模型偶尔 schema 出格, 老路径兜底).
+        if let response = try? StructuredParser.parse(answer, as: ConflictResponse.self, schema: .conflict) {
+            return response.verdict == .conflict
+        }
         let cleaned = stripMarkdownFence(answer.trimmingCharacters(in: .whitespacesAndNewlines))
         // 1) JSON 格式: {"conflict": true} 或 {"conflict": false}
         if cleaned.hasPrefix("{") {
