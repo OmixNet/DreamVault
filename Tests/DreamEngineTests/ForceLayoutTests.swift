@@ -51,6 +51,21 @@ final class ForceLayoutTests: XCTestCase {
         }
     }
 
+    func testNormalizedUniqueEdges_keepsDistinctEdgesFromSameSource() {
+        let edges = [
+            GraphEdge("A", "B"),
+            GraphEdge("B", "A"),
+            GraphEdge("A", "C"),
+            GraphEdge("A", "A")
+        ]
+
+        let normalized = ForceLayout.normalizedUniqueEdges(edges)
+
+        XCTAssertEqual(normalized.count, 2)
+        XCTAssertTrue(normalized.contains { $0 == "A" && $1 == "B" })
+        XCTAssertTrue(normalized.contains { $0 == "A" && $1 == "C" })
+    }
+
     func testPositionInBounds() {
         // 200 节点 + gravity 拉回, 位置应在画布内 (允许少量越界给动画用)
         let nodes = (0..<200).map { "N\($0)" }

@@ -5,9 +5,9 @@ import XCTest
 ///
 /// 对应架构文档第 1 节末段：把"原则 1（raw/ 永远只读）"变成文件系统机制。
 /// 这里验证：
-///   1. makeReadonly 把 .md 文件从可写压到 0o555
+///   1. makeReadonly 把 .md/.txt 文件从可写压到 0o555
 ///   2. isReadonly 正确反映当前权限
-///   3. 权限被压后仍可读（保留 x bit 让 dream/Gatherer 能 traverse）
+///   3. raw 文件被压后仍可读，raw 目录保留写权限以支持受控导入
 ///   4. Gatherer 的防御性闸门在 raw 只读时抛 attemptToModifyRaw
 final class RawReadonlyGuardTests: XCTestCase {
 
@@ -65,10 +65,10 @@ final class RawReadonlyGuardTests: XCTestCase {
 
     // MARK: - 测试
 
-    /// 1. makeReadonly 后所有 .md 文件的 posix 权限 = 0o555（不含 w bit）
-    func testMakeReadonly_setsAllMdFilesTo0555() throws {
+    /// 1. makeReadonly 后所有可处理 raw 文件的 posix 权限 = 0o555（不含 w bit）
+    func testMakeReadonly_setsAllRawFilesTo0555AndKeepsDirectoriesImportable() throws {
         let f1 = try writeRawFile(name: "a.md", content: "alpha")
-        let f2 = try writeRawFile(name: "b.md", content: "beta")
+        let f2 = try writeRawFile(name: "b.txt", content: "beta")
         // 子目录里再加一个
         try FileManager.default.createDirectory(
             at: tempDir.appendingPathComponent("raw/sub"),
@@ -82,12 +82,13 @@ final class RawReadonlyGuardTests: XCTestCase {
         // 动作
         try RawReadonlyGuard.makeReadonly(vaultRoot: tempDir)
 
-        // 期望：所有 .md 现在是 0o555（r-x r-x r-x）
+        // 期望：所有可处理文件现在是 0o555（r-x r-x r-x）
         XCTAssertEqual(currentMode(f1), 0o555, "a.md 应被压到 0o555")
-        XCTAssertEqual(currentMode(f2), 0o555, "b.md 应被压到 0o555")
+        XCTAssertEqual(currentMode(f2), 0o555, "b.txt 应被压到 0o555")
         XCTAssertEqual(currentMode(f3), 0o555, "sub/c.md 应被压到 0o555")
-        // raw/ 目录本身也应是 0o555（traverse OK，写不行）
-        XCTAssertEqual(currentMode(tempDir.appendingPathComponent("raw")), 0o555)
+        // raw/ 目录保留 owner 写权限，避免 GUI Import 被文件系统锁死。
+        XCTAssertEqual(currentMode(tempDir.appendingPathComponent("raw")), 0o755)
+        XCTAssertTrue(FileManager.default.isWritableFile(atPath: tempDir.appendingPathComponent("raw").path))
     }
 
     /// 2. isReadonly 在 makeReadonly 后返回 true；可写时返回 false；
@@ -131,14 +132,16 @@ final class RawReadonlyGuardTests: XCTestCase {
         XCTAssertTrue(content.contains("原始内容"), "0o555 下 raw 文件仍可读")
         XCTAssertTrue(content.contains("processed: false"), "frontmatter 仍可读")
 
-        // 验证不可写（FileManager.isWritableFile 应返回 false）
+        // 验证文件不可写（FileManager.isWritableFile 应返回 false）
         XCTAssertFalse(FileManager.default.isWritableFile(atPath: f.path),
                        "0o555 下 raw 文件应不可写")
 
-        // 验证仍能 traverse 到子目录（x bit 保留）
+        // 验证目录仍能 traverse 且可接收受控导入。
         let rawDir = tempDir.appendingPathComponent("raw")
         XCTAssertTrue(FileManager.default.isReadableFile(atPath: rawDir.path),
                       "raw/ 目录应可读")
+        XCTAssertTrue(FileManager.default.isWritableFile(atPath: rawDir.path),
+                      "raw/ 目录应保留 owner 写权限，支持导入新文件")
     }
 
     /// 4. Gatherer 的防御性闸门：raw 已挂只读时，任何"想往 raw 写"的调用都抛 attemptToModifyRaw

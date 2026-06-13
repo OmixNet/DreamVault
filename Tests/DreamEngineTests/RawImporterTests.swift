@@ -37,6 +37,52 @@ final class RawImporterTests: XCTestCase {
         XCTAssertTrue(text.contains("# Hello"), "原内容应保留")
     }
 
+    func testImportMarkdown_createsEditableNoteCopy() throws {
+        let vault = makeTmpVault()
+        let src = try makeSourceFile(content: "# Editable\n\nBody", ext: "md")
+
+        let result = RawImporter.importToRaw(sourceURLs: [src], vaultRoot: vault)
+
+        XCTAssertEqual(result.editableCopies.count, 1, ".md 导入应生成一份可编辑 notes/ 副本")
+        let note = result.editableCopies[0]
+        XCTAssertEqual(note.path, vault.appendingPathComponent("notes/note.md").path)
+        XCTAssertTrue(FileManager.default.isWritableFile(atPath: note.path), "notes/ 副本应可轻量编辑")
+        let noteText = try String(contentsOf: note, encoding: .utf8)
+        XCTAssertEqual(noteText, "# Editable\n\nBody", "可编辑副本应保留原 Markdown 内容，不加入 raw frontmatter")
+    }
+
+    func testImportTxt_doesNotCreateEditableMarkdownCopy() throws {
+        let vault = makeTmpVault()
+        let src = try makeSourceFile(content: "raw text", ext: "txt")
+
+        let result = RawImporter.importToRaw(sourceURLs: [src], vaultRoot: vault)
+
+        XCTAssertEqual(result.succeeded.count, 1)
+        XCTAssertTrue(result.editableCopies.isEmpty, ".txt 导入只作为 raw source，不自动变成 Markdown 编辑稿")
+    }
+
+    func testImport_succeedsAfterRawReadonlyGuardRan() throws {
+        let vault = makeTmpVault()
+        let rawDir = vault.appendingPathComponent("raw", isDirectory: true)
+        try FileManager.default.createDirectory(at: rawDir, withIntermediateDirectories: true)
+        let existing = rawDir.appendingPathComponent("existing.md")
+        try "existing".write(to: existing, atomically: true, encoding: .utf8)
+
+        try RawReadonlyGuard.makeReadonly(vaultRoot: vault)
+        XCTAssertTrue(RawReadonlyGuard.isReadonly(vaultRoot: vault))
+
+        let src = try makeSourceFile(content: "# Imported\n\nBody", ext: "md")
+        let result = RawImporter.importToRaw(sourceURLs: [src], vaultRoot: vault)
+
+        XCTAssertEqual(result.succeeded.count, 1)
+        XCTAssertTrue(result.failed.isEmpty)
+        XCTAssertTrue(FileManager.default.isWritableFile(atPath: rawDir.path),
+                      "raw/ 目录应允许受控导入")
+        XCTAssertFalse(FileManager.default.isWritableFile(atPath: result.succeeded[0].path),
+                       "导入后的 raw 文件应立即恢复只读")
+        XCTAssertTrue(RawReadonlyGuard.isReadonly(vaultRoot: vault))
+    }
+
     func testImport_succeedsForTxt() throws {
         let vault = makeTmpVault()
         let src = try makeSourceFile(content: "raw notes", ext: "txt")

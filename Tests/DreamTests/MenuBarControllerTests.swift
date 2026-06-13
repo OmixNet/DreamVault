@@ -3,6 +3,7 @@ import XCTest
 @testable import dream
 @testable import DreamEngine
 import AppKit
+import UserNotifications
 
 @MainActor
 final class MenuBarControllerTests: XCTestCase {
@@ -48,6 +49,13 @@ final class MenuBarControllerTests: XCTestCase {
     func testNotificationBodyShortExcerptUntouched() {
         let body = MenuBarController.notificationBody(accepted: 1, archived: 0, topExcerpt: "hello")
         XCTAssertTrue(body.contains("hello"))
+    }
+
+    func testForegroundNotificationOptionsUseBannerAndSound() {
+        let options = MenuBarController.foregroundNotificationOptions()
+        XCTAssertTrue(options.contains(.banner))
+        XCTAssertTrue(options.contains(.sound))
+        XCTAssertFalse(options.contains(.badge))
     }
 
     // MARK: - Recent Memory 标题截断

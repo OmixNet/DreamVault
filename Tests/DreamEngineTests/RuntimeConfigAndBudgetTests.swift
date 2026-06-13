@@ -26,6 +26,14 @@ final class RuntimeConfigAndBudgetTests: XCTestCase {
         XCTAssertEqual(r.llm.model, "gpt-4o")
     }
 
+    func testResolve_acceptsDocumentedOpenAICompatProviderSpelling() {
+        let vault = makeVaultConfig(provider: "openai_compat", model: "gpt-4o")
+        let settings = makeSettings(llmChoice: .mock)
+        let r = ResolvedDreamRuntimeConfig.resolve(cli: .init(), vaultConfig: vault, settings: settings)
+        XCTAssertEqual(r.llm.provider, .openaiCompat)
+        XCTAssertEqual(r.llm.model, "gpt-4o")
+    }
+
     func testResolve_fallsBackToSettings() {
         // CLI 无，vault 无 → settings
         let settings = makeSettings(llmChoice: .ollama, model: "qwen2.5")
@@ -54,6 +62,39 @@ final class RuntimeConfigAndBudgetTests: XCTestCase {
         let r = ResolvedDreamRuntimeConfig.resolve(cli: .init(), settings: settings)
         XCTAssertEqual(r.budget.maxCallsPerDay, 500)
         XCTAssertEqual(r.budget.monthlyBudgetUSD, 25.0)
+    }
+
+    func testResolvedRuntimeConfig_feedsDreamConfigDecayAndConsolidation() {
+        var vault = makeVaultConfig(provider: "mock", model: "ignored")
+        vault.decay = VaultConfig.DecayBlock(
+            wRecency: 0.2,
+            wFrequency: 0.5,
+            wLinkage: 0.3,
+            tauDays: 12,
+            kFrequency: 7,
+            lLinkage: 11,
+            archiveSalienceThreshold: 0.09,
+            archiveStaleDays: 42
+        )
+        let settings = makeSettings(consolidationConcurrency: 3)
+
+        let resolved = ResolvedDreamRuntimeConfig.resolve(
+            cli: .init(useThreeStepCoT: true),
+            vaultConfig: vault,
+            settings: settings
+        )
+        let dreamConfig = resolved.toDreamConfig()
+
+        XCTAssertTrue(dreamConfig.consolidation.useThreeStepCoT)
+        XCTAssertEqual(dreamConfig.consolidation.concurrency, 3)
+        XCTAssertEqual(dreamConfig.decay.wRecency, 0.2)
+        XCTAssertEqual(dreamConfig.decay.wFrequency, 0.5)
+        XCTAssertEqual(dreamConfig.decay.wLinkage, 0.3)
+        XCTAssertEqual(dreamConfig.decay.tauDays, 12)
+        XCTAssertEqual(dreamConfig.decay.freqK, 7)
+        XCTAssertEqual(dreamConfig.decay.linkL, 11)
+        XCTAssertEqual(dreamConfig.decay.archiveThreshold, 0.09)
+        XCTAssertEqual(dreamConfig.decay.staleDays, 42)
     }
 
     // MARK: - P4-T3: Keychain

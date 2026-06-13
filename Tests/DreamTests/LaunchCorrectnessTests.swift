@@ -63,14 +63,14 @@ final class LaunchCorrectnessTests: XCTestCase {
         try? FileManager.default.createDirectory(at: vault.appendingPathComponent("wiki/concepts"),
                                                  withIntermediateDirectories: true)
         let git = GitRunner(repoRoot: vault)
-        try? git.run(["init"])
-        try? git.run(["config", "user.email", "test@dreamvault.local"])
-        try? git.run(["config", "user.name", "DreamVault"])
+        _ = try? git.run(["init"])
+        _ = try? git.run(["config", "user.email", "test@dreamvault.local"])
+        _ = try? git.run(["config", "user.name", "DreamVault"])
         let clean = "# hello\n"
         let f = vault.appendingPathComponent("wiki/concepts/note.md")
         try? clean.write(to: f, atomically: true, encoding: .utf8)
-        try? git.run(["add", "."])
-        try? git.run(["commit", "-m", "baseline"])
+        _ = try? git.run(["add", "."])
+        _ = try? git.run(["commit", "-m", "baseline"])
 
         // 改了文件
         let dirty = "# hello\nworld\n"

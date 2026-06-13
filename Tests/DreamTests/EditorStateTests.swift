@@ -160,6 +160,31 @@ final class EditorStateTests: XCTestCase {
         XCTAssertFalse(state.isEditable(raw))
     }
 
+    func testRawDetection_isVaultRelativeWhenVaultRootIsSet() throws {
+        let vaultRaw = tempDir.appendingPathComponent("raw/in-vault.md")
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("outside-raw-\(UUID().uuidString)/raw/outside.md")
+        try FileManager.default.createDirectory(
+            at: vaultRaw.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: outside.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "inside".write(to: vaultRaw, atomically: true, encoding: .utf8)
+        try "outside".write(to: outside, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: outside.deletingLastPathComponent().deletingLastPathComponent()) }
+
+        state.vaultRoot = tempDir
+
+        XCTAssertTrue(state.isRaw(vaultRaw))
+        XCTAssertFalse(state.isRaw(outside))
+        XCTAssertFalse(state.isEditable(vaultRaw))
+        XCTAssertFalse(state.isEditable(outside))
+        XCTAssertFalse(state.openFile(outside), "vaultRoot 设置后不应打开 vault 外文件")
+    }
+
     func testWiki_isEditable() {
         let wiki = tempDir.appendingPathComponent("wiki/concepts/foo.md")
         XCTAssertFalse(state.isRaw(wiki))

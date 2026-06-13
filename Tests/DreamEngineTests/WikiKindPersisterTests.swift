@@ -181,6 +181,8 @@ final class WikiKindPersisterTests: XCTestCase {
         let bOut = outcome.ledger.memories.first(where: { $0.id == "b" })!
         XCTAssertTrue(aOut.relatedTo.contains("b"), "a.relatedTo 应含 b")
         XCTAssertTrue(bOut.relatedTo.contains("a"), "b.relatedTo 应含 a（双向补齐）")
+        XCTAssertFalse(aOut.relatedTo.contains("a"), "a.relatedTo 不应产生自链接")
+        XCTAssertFalse(bOut.relatedTo.contains("b"), "b.relatedTo 不应产生自链接")
     }
 
     // MARK: - 4. Decayer 公式边界（架构第 4 节）
