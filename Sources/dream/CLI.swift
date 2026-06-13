@@ -48,6 +48,7 @@ struct DreamCLI {
         case "report":  return cmdReport(rest, opts: opts)
         case "status":  return cmdStatus(rest, opts: opts)
         case "rollback": return cmdRollback(rest, opts: opts)
+        case "eval":    return await cmdEval(rest, opts: opts)
         case "app":     return cmdApp(rest, opts: opts)
         case "help", "-h", "--help":
             printHelp()
@@ -211,6 +212,80 @@ struct DreamCLI {
         return 1
     }
 
+    // MARK: - dream eval (P3-8 §3 修复: 金标评测集)
+
+    /// P3-8: 跑金标评测集 (30 case), 算 P/R/F1. 不绑 CI.
+    /// `dream eval [--llm mock|ollama] [--phase verify|contradiction|all] [--report path.md]`
+    /// - 默认 --llm mock (MockLLMProvider.defaultHandler 2 步 fast path)
+    /// - 默认 --phase all (跑 verify + contradiction 全部)
+    /// - 默认 stdout 输出 markdown 报告; --report <path> 写到文件
+    static func cmdEval(_ args: [String], opts: GlobalOptions) async -> Int32 {
+        // 解析参数
+        var phaseFilter: String? = nil
+        var reportPath: String? = nil
+        var i = 0
+        while i < args.count {
+            let a = args[i]
+            switch a {
+            case "--phase":
+                i += 1
+                if i < args.count { phaseFilter = args[i] }
+            case "--report":
+                i += 1
+                if i < args.count { reportPath = args[i] }
+            default:
+                FileHandle.standardError.write(Data(
+                    "dream eval: 未知参数 '\(a)'\n".utf8))
+                return 1
+            }
+            i += 1
+        }
+
+        // 选 provider (跟 DREAMVAULT_LLM / --llm 一致)
+        let provider = LLMFactory.fromEnvironment()
+        FileHandle.standardError.write(Data(
+            "[dream eval] provider: \(type(of: provider)) phase: \(phaseFilter ?? "all")\n".utf8))
+
+        // 选 phase
+        let cases: [EvalCase]
+        if let p = phaseFilter {
+            switch p {
+            case "verify": cases = EvalDataset.cases(for: .verify)
+            case "contradiction": cases = EvalDataset.cases(for: .contradiction)
+            default:
+                FileHandle.standardError.write(Data(
+                    "dream eval: 未知 phase '\(p)' (verify|contradiction|all)\n".utf8))
+                return 1
+            }
+        } else {
+            cases = EvalDataset.standard
+        }
+
+        // 跑
+        let runner = EvalRunner(dataset: cases, provider: provider)
+        let report = await runner.run()
+
+        // 输出 markdown
+        let md = EvalReportMarkdown.render(report)
+        if let path = reportPath {
+            do {
+                try md.write(toFile: path, atomically: true, encoding: .utf8)
+                FileHandle.standardError.write(Data(
+                    "[dream eval] 报告写到 \(path)\n".utf8))
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "dream eval: 写报告失败: \(error.localizedDescription)\n".utf8))
+                return 1
+            }
+        } else {
+            print(md)
+        }
+
+        // 退出码: 0 = 全部正确, 1 = 有错 (但仍输出报告供 review)
+        let total = report.aggregate()
+        return total.correct == total.total ? 0 : 1
+    }
+
     // MARK: - help
 
     static func printHelp() {
@@ -222,6 +297,8 @@ struct DreamCLI {
           dream report  [--vault <path>] [--last N]
           dream status  [--vault <path>]
           dream rollback [--vault <path>]
+          dream eval    [--llm mock|ollama] [--phase verify|contradiction|all]
+                        [--report path.md]
           dream app     [--vault <path>]              启动 SwiftUI GUI
           dream help
           dream version
@@ -251,6 +328,7 @@ struct DreamCLI {
           dream report --last 3
           dream status
           dream rollback
+          dream eval --llm ollama --report eval-2026-06-14.md
         """
         print(help)
     }
