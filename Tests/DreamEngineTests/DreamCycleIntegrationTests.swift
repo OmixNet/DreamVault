@@ -123,7 +123,7 @@ final class DreamCycleIntegrationTests: XCTestCase {
         _ = try writeRaw("2026-06-11-b.md",
                         body: "同时确认 OllamaProvider 在本机可用，使用 ollama run llama3.1")
 
-        let cycle = DreamCycle(vaultRoot: tempDir, llm: MockLLMProvider(), git: git)
+        let cycle = DreamCycle(vaultRoot: tempDir, llm: MockLLMProvider(), git: git, config: .fastDebug)
         let outcome = try await cycle.runOnce(now: now)
 
         XCTAssertEqual(outcome.gatheredCount, 2, "应该 gather 到 2 个候选")
@@ -160,7 +160,7 @@ final class DreamCycleIntegrationTests: XCTestCase {
     func testRunOnce_idempotent_secondRunNoOp() async throws {
         _ = try writeRaw("2026-06-11-a.md", body: "持久化场景")
 
-        let cycle = DreamCycle(vaultRoot: tempDir, llm: MockLLMProvider(), git: git)
+        let cycle = DreamCycle(vaultRoot: tempDir, llm: MockLLMProvider(), git: git, config: .fastDebug)
         _ = try await cycle.runOnce(now: now)
         // 记下 commit 数量
         let logBefore = try git.run(["rev-list", "--count", "HEAD"])
@@ -202,13 +202,49 @@ final class DreamCycleIntegrationTests: XCTestCase {
         // Consolidator.verify 的 system 含 "事实校验器" → 回 YES
         // ContradictionDetector 的 system 含 "互相矛盾" → 看到 AppKit 回 CONFLICT
         let customLLM = MockLLMProvider { system, user in
-            if system.contains("事实校验器") { return "YES" }
+            // P3-3: 默认 3 步 CoT, analyze + generate + verify 三个 phase.
+            // 按 system prompt 关键词判 phase 返相应 JSON.
+            if system.contains("事实校验器") { return "YES" }  // verify
             if system.contains("互相矛盾") {
                 return user.contains("AppKit") ? "CONFLICT" : "OK"
             }
+            if system.contains("分析师") || system.contains("keyEntities") {
+                // analyze 阶段: 返合法 JSON
+                return #"{"keyEntities":["auto"],"keyConcepts":["auto"],"tensionsWithExisting":[],"recommendedLessonTexts":["mock lesson"],"reasoning":"auto","recommendedKind":"concept"}"#
+            }
+            if system.contains("提炼员") || system.contains("draft") {
+                // generate 阶段: 抠 "原候选文本" 后**第 2 行**当 excerpt (body 原文, P0-3 必过)
+                // P3-3: SourceRefValidator 走 normalize.contains. excerpt 必须跟 body 连续 substring.
+                // body 整段当 excerpt 必过. sourceFile 抠 user 里 `[raw/xxx.md:NN]` evidence
+                // marker 拿真路径 (跟 gatherer 写 mem.sources.first.file 同, 否则
+                // consolidate3StepOne line 476 file-mismatch check fail → out=[] → 0 accepted).
+                let excerpt: String
+                if let markerRange = user.range(of: "原候选文本") {
+                    let afterMarker = user[markerRange.upperBound...]
+                    let lines = afterMarker.components(separatedBy: "\n")
+                    let bodyLine = lines.first(where: { $0.trimmingCharacters(in: .whitespaces).count >= 5 }) ?? "fallback excerpt"
+                    excerpt = String(bodyLine.prefix(200))
+                } else {
+                    excerpt = "fallback excerpt"
+                }
+                // 抠真 sourceFile (跟 defaultHandler 走同款)
+                let realFile: String
+                if let evRange = user.range(of: "[raw/"),
+                   let closeRange = user[evRange.upperBound...].range(of: "]") {
+                    let filePart = user[evRange.upperBound..<closeRange.lowerBound]
+                    if let colonIdx = filePart.firstIndex(of: ":") {
+                        realFile = String(filePart[..<colonIdx])
+                    } else {
+                        realFile = String(filePart)
+                    }
+                } else {
+                    realFile = "raw/test.md"
+                }
+                return "[{\"text\":\"mock draft\",\"sourceFile\":\"\(realFile)\",\"sourceLine\":1,\"sourceExcerpt\":\"\(excerpt)\"}]"
+            }
             return "YES"
         }
-        let cycle = DreamCycle(vaultRoot: tempDir, llm: customLLM, git: git)
+        let cycle = DreamCycle(vaultRoot: tempDir, llm: customLLM, git: git, config: .fastDebug)
         let outcome = try await cycle.runOnce(now: now)
 
         XCTAssertEqual(outcome.gatheredCount, 1)
@@ -220,7 +256,7 @@ final class DreamCycleIntegrationTests: XCTestCase {
     func testRunOnce_withoutGitRunner_doesNotCrash() async throws {
         _ = try writeRaw("2026-06-11-a.md", body: "无 git 跑通")
 
-        let cycle = DreamCycle(vaultRoot: tempDir, llm: MockLLMProvider(), git: nil)
+        let cycle = DreamCycle(vaultRoot: tempDir, llm: MockLLMProvider(), git: nil, config: .fastDebug)
         let outcome = try await cycle.runOnce(now: now)
 
         XCTAssertEqual(outcome.gatheredCount, 1)

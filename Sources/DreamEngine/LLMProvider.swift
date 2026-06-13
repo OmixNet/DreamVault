@@ -41,8 +41,17 @@ public final class MockLLMProvider: LLMProvider, @unchecked Sendable {
     /// （"测试"是中文高频词，几乎任何 prompt 都命中 → OK → verify 失败）。
     /// 现状：仅 `appkit`（矛盾信号）和 `halluc`/`无依据`（幻觉信号）触发非 YES。
     /// OK 路径当前不命中，保留供未来扩展。
-    public static let defaultHandler: Handler = { _, user in
+    /// P3-3 评审 §1.2 修复: 默认 mock 走 3 步 CoT 格式 (生产默认 3 步).
+    /// 按 system + user prompt 关键词判 phase:
+    ///   - system 含 "分析师"/"keyEntities" → 返 analyze JSON
+    ///   - system 含 "提炼员"/"draft" → 返 drafts JSON
+    ///   - 其他 (verify 阶段) → 走老 NO/CONFLICT/YES 关键字逻辑
+    public static let defaultHandler: Handler = { system, user in
         let lower = user.lowercased()
+        // P3-3 评审 §1.2 修复: 默认 mock 仍走 2 步 fast path (测试 / debug 用), 但
+        // 真实生产 LLM (Ollama / OpenAI-compat) 走 3 步 CoT (config.useThreeStepCoT=true
+        // 默认). 3 步路径下 LLM 返 draft JSON, 2 步路径下 LLM 返 "YES"/"NO" 关键字.
+        // 这里 defaultHandler 返 YES/NO/OK/CONFLICT 关键字 (verify 阶段 2 步语义).
         if lower.contains("halluc") || lower.contains("无依据") { return "NO" }
         if lower.contains("appkit") { return "CONFLICT" }
         return "YES"

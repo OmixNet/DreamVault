@@ -23,8 +23,9 @@ public struct DreamConfig: Sendable {
     public static let fastDebug = DreamConfig(
         consolidation: ConsolidationConfig(useThreeStepCoT: false, concurrency: 1)
     )
-    /// 实际默认：2 步 + 2 路（跟 ConsolidationConfig() 默认值一致）。
-    /// P3 决策 T6：本地 Ollama 7B 资源友好，避免 OOM。
+    /// P3-3 评审 §1.2 修复: 生产默认走 3 步 (ConsolidationConfig() 默认), 防幻觉.
+    /// 真实 LLM provider (Ollama / OpenAI-compat) 走 3 段 CoT 是默认行为.
+    /// 注意: 旧 "productionDefault" 注释 (P3 决策 T6) 说 2 步, P3-3 翻案 — 真生产推荐 3 步.
     public static let productionDefault = DreamConfig()
 }
 

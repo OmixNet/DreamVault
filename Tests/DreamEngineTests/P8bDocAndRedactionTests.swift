@@ -7,11 +7,11 @@ final class P8bDocAndRedactionTests: XCTestCase {
     // MARK: - #1 DreamConfig.productionDefault 注释与默认值一致
 
     func testProductionDefault_actuallyMatchesDocs() {
-        // P3 决策 T6：默认值 = 2 步 + 2 路（不是注释里"3 段 + 4 路"那个）
-        // P8 修注释让两者对齐
+        // P3-3 评审 §1.2 修复: productionDefault 默认 3 步 (防幻觉). 真实 LLM 走 3 段.
+        // concurrency 仍是 2 (Ollama 7B 资源友好).
         let cfg = DreamConfig.productionDefault.consolidation
-        XCTAssertFalse(cfg.useThreeStepCoT,
-                       "productionDefault 应是 2 步（useThreeStepCoT=false）")
+        XCTAssertTrue(cfg.useThreeStepCoT,
+                      "P3-3 评审 §1.2 修复: productionDefault 应是 3 步 (useThreeStepCoT=true)")
         XCTAssertEqual(cfg.concurrency, 2,
                        "productionDefault 应是 concurrency=2")
     }

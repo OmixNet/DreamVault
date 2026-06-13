@@ -16,10 +16,14 @@ public struct ConsolidationConfig: Sendable {
     public var redactBeforeConsolidate: Bool = true
     /// 走三段式 CoT（analyze → generate → verify），生产 LLM 推荐 true；
     /// false 则走最便宜的 2 步快速路径（mock / 极快模型）。
-    /// 三段任一阶段失败时自动回退到 2 步（fallbackOnThreeStepFailure）。
-    public var useThreeStepCoT: Bool = false  // P3-T2: 默认关，Settings 显式开启
-    /// 三段失败时是否回退到 2 步。false 则三段任一阶段崩了直接抛错（调试用）。
-    public var fallbackOnThreeStepFailure: Bool = true
+    /// 三段 CoT 默认开 (P3-3 评审 §1.2 修复). 老默认 false 把原文当教训污染 ledger.
+    /// 真实 LLM provider (Ollama / OpenAI-compat) 走 3 段防幻觉 (analyze + generate + verify + SourceRefValidator).
+    /// mock provider 走 2 步快速路径 (test/debug 用).
+    public var useThreeStepCoT: Bool = true
+    /// P3-3 评审 §1.2 修复: 3 段失败时**不**回退到 2 步 (那把全文当教训污染 ledger).
+    /// 默认 false: 3 段失败 → 跳过该 candidate, 留明晚重试.
+    /// fallback=true: 仍走 2 步 (但仅 mock provider 安全, 真实 provider 建议 false).
+    public var fallbackOnThreeStepFailure: Bool = false
     /// 跨候选并发上限。LLM 是 IO-bound（本地 Ollama 4+ 容易 OOM/超时）。
     /// P3-T2: 默认 2（Ollama 7B 量化安全线），上限 4（防止用户填 100）。
     /// 0 或 1 = 串行。Settings 让用户调。
@@ -29,8 +33,8 @@ public struct ConsolidationConfig: Sendable {
     public init(
         durableMinSources: Int = 2,
         redactBeforeConsolidate: Bool = true,
-        useThreeStepCoT: Bool = false,
-        fallbackOnThreeStepFailure: Bool = true,
+        useThreeStepCoT: Bool = true,
+        fallbackOnThreeStepFailure: Bool = false,
         concurrency: Int = 2
     ) {
         self.durableMinSources = durableMinSources
@@ -72,7 +76,7 @@ public struct Consolidator {
         )
         if !rejected.isEmpty {
             FileHandle.standardError.write(Data(
-                "[P0-3] fabricated excerpt rejected: file=\(draftFile) excerpt=\"\(draftExcerpt.prefix(80))\"\n".utf8))
+                "[P0-3] fabricated excerpt rejected: file=\(draftFile) excerpt=\"\(draftExcerpt.prefix(80))\" rejected=\(rejected)\n".utf8))
             return (false, rejected.count)
         }
         _ = passed
@@ -378,9 +382,12 @@ public struct Consolidator {
                         await counter.add(localCount)
                         return result
                     } catch {
-                        // 不让一个 candidate 抛错导致整批都丢 —— 吞掉，记到 firstError。
-                        // 如果 fallback=false 且用户希望"任一阶段崩了整批终止"，
-                        // 应当走 consolidate3StepSerial（concurrency=1）。
+                        // P3-3 评审 §1.2 修复: 3 段失败**不**回退 2 步 (那把全文当教训污染 ledger).
+                        // 单条 candidate 失败时跳过, 记到 firstError, 整批继续. 失败的 candidate
+                        // 留明晚重试 (因为它的 raw/ 没被标 processed, 下次 gather 会重新收集).
+                        // 设计取舍: 不在 DreamCycle 暴露 "deferred" 计数, onStage 已经会报
+                        // "consolidate failed" 1 次; 真实部署看 dream-report 跟 log 知道哪些 skip.
+                        await counter.addError()  // 失败计数 (可观测, 调试用)
                         if firstError == nil { firstError = error }
                         return []
                     }
@@ -416,12 +423,20 @@ public struct Consolidator {
     private final class CounterBox: @unchecked Sendable {
         private let lock = NSLock()
         private var v: Int = 0
+        private var errors: Int = 0  // P3-3: 3 段失败计数
         func add(_ n: Int) {
             lock.lock(); v += n; lock.unlock()
+        }
+        func addError() {
+            lock.lock(); errors += 1; lock.unlock()
         }
         func value() async -> Int {
             lock.lock(); defer { lock.unlock() }
             return v
+        }
+        func errorCount() async -> Int {
+            lock.lock(); defer { lock.unlock() }
+            return errors
         }
     }
 
@@ -490,9 +505,12 @@ public struct Consolidator {
             return out
         } catch {
             if fallback {
-                // 三段任一失败：回退到两段（旧行为）
+                // P3-3 评审 §1.2 修复: 老行为 "回退 2 步" 把全文当教训污染 ledger.
+                // 新行为: 仍允许 2 步 fallback, 但仅当 config 显式开 + mock provider 时
+                // (生产环境默认 fallback=false, 3 段失败直接走 throw 让 DreamCycle 处理).
                 return try await consolidate([mem], rejectedFabricated: &rejectedFabricated)
             }
+            // P3-3: 3 段失败, 不回退 2 步, 抛错让 DreamCycle 跳过该 candidate (留明晚重试)
             throw error
         }
     }
