@@ -250,7 +250,8 @@ public struct DreamCycle {
                 if !dur.isEmpty {
                     let result = Self.mergeSimilar(
                         newAccepted: newAccepted,
-                        existing: mergedLedger.memories
+                        existing: mergedLedger.memories,
+                        embeddingProvider: nil  // P3-6: 暂 nil (DreamConfig 升级时再注入)
                     )
                     newAccepted = result.newAccepted
                     mergedLedger.memories = result.updatedExisting
@@ -378,7 +379,8 @@ public struct DreamCycle {
     public static func mergeSimilar(newAccepted: [Memory],
                                     existing: [Memory],
                                     now: Date = Date(),
-                                    threshold: Double = TextSimilarity.mergeThreshold
+                                    threshold: Double = TextSimilarity.mergeThreshold,
+                                    embeddingProvider: EmbeddingProvider? = nil
     ) -> (newAccepted: [Memory], updatedExisting: [Memory], mergeCount: Int) {
         var remaining = newAccepted
         var updatedExisting = existing
@@ -397,7 +399,20 @@ public struct DreamCycle {
             for idx in durIdx {
                 let exist = updatedExisting[idx]
                 let sim = TextSimilarity.jaccard(newM.text, exist.text)
-                if sim >= threshold {
+                // P3-6 评审 §1.1 升级: embedding 可用时双信号 (cosine OR jaccard) 判 merge.
+                // 不可用时仅 jaccard (P3-1 既有). embedding 让"SwiftUI 用于 macOS 桌面 UI
+                // 稳定"vs"SwiftUI 用于 macOS 桌面 UI 可靠"这种 trigram 重合高但语义完全
+                // 一样的对更准 (cosine 还能识别"SwiftUI vs AppKit"这种框架差异).
+                let isMerge: Bool = {
+                    if let provider = embeddingProvider {
+                        let r = EmbeddingMerge.similarity(newM.text, exist.text, with: provider)
+                        // 任一信号判 merge → 真 merge. 双信号 OR.
+                        return r.isMerge || sim >= threshold
+                    } else {
+                        return sim >= threshold
+                    }
+                }()
+                if isMerge {
                     // 合并: sources 累加去重, lastAccess 更新, status 重 classify
                     var mergedSources = exist.sources
                     for s in newM.sources {
