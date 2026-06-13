@@ -49,28 +49,43 @@ public final class NightlyDreamScheduler {
         if enabled {
             writePlist(vaultPath: vaultPath, hour: hour, minute: minute, to: plistURL)
             // launchctl bootstrap：旧 job 存在时会失败，先 bootout 一次
-            runLaunchctl(["bootout",
-                          "gui/\(getuid())/\(Self.jobLabel)"])
-            runLaunchctl(["bootstrap",
-                          "gui/\(getuid())",
-                          Self.plistPath])
+            _ = runLaunchctl(["bootout",
+                               "gui/\(getuid())/\(Self.jobLabel)"])
+            let bootstrap = runLaunchctl(["bootstrap",
+                                          "gui/\(getuid())",
+                                          Self.plistPath])
+            if bootstrap.exitCode != 0 {
+                lastError = bootstrap.userMessage
+            }
         } else {
-            runLaunchctl(["bootout",
-                          "gui/\(getuid())/\(Self.jobLabel)"])
+            let bootout = runLaunchctl(["bootout",
+                                        "gui/\(getuid())/\(Self.jobLabel)"])
+            if bootout.exitCode != 0,
+               !bootout.output.localizedCaseInsensitiveContains("No such process"),
+               !bootout.output.localizedCaseInsensitiveContains("Could not find service") {
+                lastError = bootout.userMessage
+            }
             try? fm.removeItem(at: plistURL)
         }
         let status = currentStatus()
-        return status
+        return Status(enabled: status.enabled,
+                      nextRunAt: status.nextRunAt,
+                      lastRunAt: status.lastRunAt,
+                      lastExitCode: status.lastExitCode,
+                      lastError: lastError ?? status.lastError)
     }
 
     /// 读取 plist + launchctl print-cache 给完整状态
     public func currentStatus() -> Status {
         let fm = FileManager.default
-        let enabled = fm.fileExists(atPath: Self.plistPath)
+        let plistExists = fm.fileExists(atPath: Self.plistPath)
+        let launchd = runLaunchctl(["print", "gui/\(getuid())/\(Self.jobLabel)"])
+        let launchdLoaded = launchd.exitCode == 0
+        let enabled = plistExists && launchdLoaded
 
         // nextRunAt：从 plist 读 StartCalendarInterval
         var nextRunAt: Date? = nil
-        if enabled,
+        if plistExists,
            let data = try? Data(contentsOf: URL(fileURLWithPath: Self.plistPath)),
            let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
            let cal = plist["StartCalendarInterval"] as? [String: Any],
@@ -106,9 +121,13 @@ public final class NightlyDreamScheduler {
             }
         }
 
+        let statusError: String? = plistExists && !launchdLoaded
+            ? "LaunchAgent plist exists but launchd job is not loaded: \(launchd.userMessage)"
+            : nil
+
         return Status(enabled: enabled, nextRunAt: nextRunAt,
                       lastRunAt: lastRunAt, lastExitCode: lastExitCode,
-                      lastError: nil)
+                      lastError: statusError)
     }
 
     /// 算下一次 h:m 的 Date
@@ -155,15 +174,35 @@ public final class NightlyDreamScheduler {
         try? plist.data(using: .utf8)?.write(to: url, options: .atomic)
     }
 
-    private func runLaunchctl(_ args: [String]) {
+    private struct LaunchctlResult {
+        let exitCode: Int32
+        let output: String
+
+        var userMessage: String {
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                return "launchctl exited with code \(exitCode)"
+            }
+            return "launchctl exited with code \(exitCode): \(trimmed)"
+        }
+    }
+
+    private func runLaunchctl(_ args: [String]) -> LaunchctlResult {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         p.arguments = args
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = pipe
-        try? p.run()
+        do {
+            try p.run()
+        } catch {
+            return LaunchctlResult(exitCode: -1, output: error.localizedDescription)
+        }
         p.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        return LaunchctlResult(exitCode: p.terminationStatus, output: output)
     }
 
     private static func timestamp() -> String {

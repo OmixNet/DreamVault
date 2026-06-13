@@ -12,6 +12,7 @@ public enum RawImporter {
 
     public struct ImportResult: Equatable {
         public let succeeded: [URL]     // 实际写入的路径
+        public let editableCopies: [URL] // .md 导入后生成的 notes/ 可编辑副本
         public let skipped: [String]    // 跳过的源（不支持 / 重名加后缀）
         public let failed: [String]     // 出错的源（权限 / IO 错）
     }
@@ -43,9 +44,13 @@ public enum RawImporter {
                                    vaultRoot: URL,
                                    addBatchID: Bool = true) -> ImportResult {
         let rawDir = vaultRoot.appendingPathComponent("raw", isDirectory: true)
+        let notesDir = vaultRoot.appendingPathComponent("notes", isDirectory: true)
         try? FileManager.default.createDirectory(at: rawDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: notesDir, withIntermediateDirectories: true)
+        ensureRawDirectoryAcceptsImports(rawDir)
         let batchID = "import-\(timestamp())-\(UUID().uuidString.prefix(6))"
         var succeeded: [URL] = []
+        var editableCopies: [URL] = []
         var skipped: [String] = []
         var failed: [String] = []
 
@@ -65,12 +70,39 @@ public enum RawImporter {
                     batchID: addBatchID ? batchID : nil
                 )
                 try withFrontmatter.write(to: dest, atomically: true, encoding: .utf8)
+                RawReadonlyGuard.makeFileReadonly(dest)
                 succeeded.append(dest)
+                if ext == "md" {
+                    do {
+                        let editableDest = try uniqueDestination(in: notesDir, original: src.lastPathComponent)
+                        try content.write(to: editableDest, atomically: true, encoding: .utf8)
+                        try? FileManager.default.setAttributes(
+                            [.posixPermissions: NSNumber(value: 0o644)],
+                            ofItemAtPath: editableDest.path
+                        )
+                        editableCopies.append(editableDest)
+                    } catch {
+                        failed.append("\(src.lastPathComponent) editable copy failed (\(error.localizedDescription))")
+                    }
+                }
             } catch {
                 failed.append("\(src.lastPathComponent) (\(error.localizedDescription))")
             }
         }
-        return ImportResult(succeeded: succeeded, skipped: skipped, failed: failed)
+        return ImportResult(succeeded: succeeded, editableCopies: editableCopies, skipped: skipped, failed: failed)
+    }
+
+    private static func ensureRawDirectoryAcceptsImports(_ rawDir: URL) {
+        do {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: RawReadonlyGuard.readonlyDirMode)],
+                ofItemAtPath: rawDir.path
+            )
+        } catch {
+            FileHandle.standardError.write(Data(
+                "[RawImporter] raw/ 目录无法恢复为可导入状态: \(rawDir.path) — \(error.localizedDescription)\n".utf8
+            ))
+        }
     }
 
     /// 算 unique 目标路径：同名加日期后缀（绝不覆盖）

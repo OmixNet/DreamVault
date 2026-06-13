@@ -54,7 +54,7 @@ public enum ForceLayout {
         // 初始化: 随机散布 (用确定性 hash 让同样输入总跑出同样结果, 便于 test)
         var pos: [String: CGPoint] = [:]
         var vel: [String: CGPoint] = [:]
-        for (i, id) in nodes.enumerated() {
+        for id in nodes {
             let seed = stableHash(id)
             let x = area.width * 0.1 + Double(seed % 1000) / 1000.0 * area.width * 0.8
             let y = area.height * 0.1 + Double((seed / 1000) % 1000) / 1000.0 * area.height * 0.8
@@ -67,16 +67,7 @@ public enum ForceLayout {
         let k2 = k * k
         let dt = 0.1  // 时间步
 
-        // 边集合去重
-        var edgeSet = Set<String>()
-        var uniqueEdges: [(String, String)] = []
-        for e in edges {
-            let key = e.u < e.v ? "\(e.u)|\(e.u)" : "\(e.v)|\(e.u)"
-            if !edgeSet.contains(key) {
-                edgeSet.insert(key)
-                uniqueEdges.append((e.u, e.v))
-            }
-        }
+        let uniqueEdges = normalizedUniqueEdges(edges)
 
         for _ in 0..<iterations {
             // 1) 斥力: 所有节点对
@@ -162,5 +153,20 @@ public enum ForceLayout {
             h = (h &* 33) &+ UInt64(byte)
         }
         return Int(h % 1000000)
+    }
+
+    static func normalizedUniqueEdges(_ edges: [GraphEdge]) -> [(String, String)] {
+        var edgeSet = Set<String>()
+        var uniqueEdges: [(String, String)] = []
+        for edge in edges {
+            guard edge.u != edge.v else { continue }
+            let a = min(edge.u, edge.v)
+            let b = max(edge.u, edge.v)
+            let key = "\(a)|\(b)"
+            if edgeSet.insert(key).inserted {
+                uniqueEdges.append((a, b))
+            }
+        }
+        return uniqueEdges
     }
 }
