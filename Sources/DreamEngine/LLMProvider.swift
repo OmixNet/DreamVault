@@ -142,6 +142,113 @@ public struct OllamaProvider: LLMProvider, Sendable {
     }
 }
 
+// MARK: - OllamaNativeProvider（P3-5 评审 §4.2 修复: Ollama 原生端点 + json_schema 约束）
+//
+// Ollama `/v1/chat/completions` (OpenAI 兼容) **不**支持 `format: json_schema`.
+// Ollama 原生 `/api/chat` 端点支持 `format: {type: "json_schema", schema: {...}}`,
+// 用 grammar 强制生成结构化输出. 验证, 矛盾, analyze, generate 4 个 schema 走这路,
+// 消灭 `contains("YES")` / `contains("CONFLICT")` 这类解析雷.
+//
+// 设计取舍:
+// - 老 OllamaProvider (OpenAI 兼容) 保留 — OpenAI / vLLM / LM Studio 仍用 OpenAI 端点.
+// - 新 OllamaNativeProvider 仅给本地 Ollama 用 — 走原生端点 + grammar 约束.
+// - schema 由 `LLMSchema.jsonSchema(for:)` 提供 (Ollama `format` 字段需要 dict).
+// - 响应走 `/api/chat` 原生格式: { message: { content: "..." } } (跟 OpenAI 兼容格式**不**同).
+public struct OllamaNativeProvider: LLMProvider, Sendable {
+    public let baseURL: URL
+    public let model: String
+    public let apiKey: String?
+    public let timeoutSeconds: TimeInterval
+
+    public init(baseURL: URL = URL(string: "http://127.0.0.1:11434")!,
+                model: String = "llama3.1",
+                apiKey: String? = nil,
+                timeoutSeconds: TimeInterval = 120) {
+        self.baseURL = baseURL
+        self.model = model
+        self.apiKey = apiKey
+        self.timeoutSeconds = timeoutSeconds
+    }
+
+    public enum OllamaNativeError: Error, CustomStringConvertible {
+        case badStatus(Int, body: String)
+        case malformedResponse(String)
+        case transport(Error)
+
+        public var description: String {
+            switch self {
+            case .badStatus(let code, let body):
+                return "OllamaNative HTTP \(code): \(body)"
+            case .malformedResponse(let s):
+                return "OllamaNative 响应无法解析: \(s)"
+            case .transport(let e):
+                return "OllamaNative 传输错误: \(e.localizedDescription)"
+            }
+        }
+    }
+
+    public func complete(system: String, user: String) async throws -> String {
+        // P3-5: 自动从 system prompt 关键词判 schema, 走对应 json_schema 约束.
+        // 老 OpenAI 兼容 OllamaProvider **不**走这 path.
+        let schemaName = LLMSchema.detect(fromSystemPrompt: system)
+        return try await chatOnce(system: system, user: user, schema: schemaName)
+    }
+
+    /// 单次 Ollama /api/chat 调用. 可选 `format: json_schema` 约束.
+    /// `schema=nil` → 走纯文本模式 (跟老 OllamaProvider 行为一致).
+    func chatOnce(system: String, user: String, schema: LLMSchema.Name?) async throws -> String {
+        let url = baseURL.appendingPathComponent("api/chat")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let apiKey, !apiKey.isEmpty {
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        req.timeoutInterval = timeoutSeconds
+
+        var body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": system],
+                ["role": "user", "content": user],
+            ],
+            "stream": false,
+        ]
+        if let schemaName = schema {
+            // Ollama native format 字段: {type: "json_schema", schema: {...}} 或
+            // 老式 {type: "json_object"} 兼容模式. 这里用 json_schema 走严格 grammar.
+            body["format"] = [
+                "type": "json_schema",
+                "schema": LLMSchema.jsonSchema(for: schemaName),
+            ]
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw OllamaNativeError.transport(error)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw OllamaNativeError.malformedResponse("非 HTTP 响应")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw OllamaNativeError.badStatus(http.statusCode, body: body)
+        }
+        // 解析 Ollama /api/chat 原生响应: { message: { content: "..." } }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let message = json["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            let raw = String(data: data, encoding: .utf8) ?? ""
+            throw OllamaNativeError.malformedResponse(raw)
+        }
+        return content
+    }
+}
+
 // MARK: - 工厂：从环境变量决定 provider
 //
 // `DREAMVAULT_LLM` 取值：
