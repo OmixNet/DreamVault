@@ -157,7 +157,11 @@ public struct DreamCycle {
         let gathered: Gatherer.GatherResult
         do {
             gathered = try gatherer.gather()
-            onStage?("gather done: \(gathered.gatheredFiles.count) files")
+            // P3-4 §2.6: 报告分块数 + 截断告警. dream-report / onStage 用户审查.
+            let chunkSummary = gathered.chunkStats.map { (k, v) in
+                "\(k):\(v.chunks)c\(v.truncated ? "⚠️" : "")"
+            }.joined(separator: ", ")
+            onStage?("gather done: \(gathered.gatheredFiles.count) files, \(gathered.candidates.count) candidates [\(chunkSummary)]")
         } catch {
             onStage?("gather failed: \(error.localizedDescription)")
             throw DreamError.gatherFailed(underlying: error)

@@ -52,11 +52,18 @@ public struct Gatherer {
     public let redactor: Redactor
     /// raw 子目录名，默认 "raw"
     public let rawSubdir: String
+    /// P3-4 §2.6: 单个 candidate 块大小上限. 默认 4000 字符, 安全线 < Ollama num_ctx=8192
+    /// (留 ~50% 给 analyze + generate prompt + 余量). 设大点会丢后半段教训 (静默截断).
+    public let maxChunkChars: Int
 
-    public init(vaultRoot: URL, redactor: Redactor = Redactor(), rawSubdir: String = "raw") {
+    public init(vaultRoot: URL,
+                redactor: Redactor = Redactor(),
+                rawSubdir: String = "raw",
+                maxChunkChars: Int = 4000) {
         self.vaultRoot = vaultRoot
         self.redactor = redactor
         self.rawSubdir = rawSubdir
+        self.maxChunkChars = maxChunkChars
     }
 
     /// 一次收集的产物：候选记忆 + 它来自哪个 raw 文件（供 commit 后登记 processed）
@@ -70,6 +77,19 @@ public struct Gatherer {
         /// 校验 draft.sourceExcerpt 是否真在源文件里.
         /// nil = 旧格式 (向后兼容) / 文件被删 / 拼装 dummy 时
         public let sourceContents: [String: String]
+        /// P3-4 评审 §2.6 修复: 每个文件分块统计 (relPath -> ChunkStat).
+        /// dream-report 会读这个字段给用户审查分块数 + 截断告警.
+        public let chunkStats: [String: ChunkStat]
+    }
+
+    /// P3-4: 单个 raw 文件的分块统计
+    /// - `chunks`: 该文件被分成的 candidate 数量 (1 = 不分块)
+    /// - `truncated`: 是否因总长 > maxChars 被强制截断 (丢内容告警)
+    /// - `originalChars`: 文件 body 原始字符数 (脱敏前)
+    public struct ChunkStat: Equatable, Sendable {
+        public let chunks: Int
+        public let truncated: Bool
+        public let originalChars: Int
     }
 
     /// 扫描 raw/，返回脱敏后的候选 Memory 列表。
@@ -80,7 +100,8 @@ public struct Gatherer {
         let rawDir = vaultRoot.appendingPathComponent(rawSubdir)
         guard fm.fileExists(atPath: rawDir.path) else {
             return GatherResult(candidates: [], gatheredFiles: [],
-                                redactionCounts: [:], sourceContents: [:])
+                                redactionCounts: [:], sourceContents: [:],
+                                chunkStats: [:])
         }
         let processed = Self.loadProcessedRegistry(vaultRoot: vaultRoot)
 
@@ -93,6 +114,8 @@ public struct Gatherer {
         var redactionCounts: [String: Int] = [:]
         // P0-3: 源文件内容 (relPath -> body), 供 SourceRefValidator 闸门
         var sourceContents: [String: String] = [:]
+        // P3-4 §2.6: 每个文件分块统计, dream-report 给用户审查分块数 + 截断告警
+        var chunkStats: [String: ChunkStat] = [:]
 
         for file in files {
             let relPath = "\(rawSubdir)/\(file.lastPathComponent)"
@@ -115,12 +138,32 @@ public struct Gatherer {
             for (label, count) in report.counts {
                 redactionCounts[label, default: 0] += count
             }
-            let excerpt = String(redactedBody.prefix(200))
-
-            candidates.append(Memory(
-                text: redactedBody,
-                sources: [SourceRef(file: relPath, line: doc.bodyStartLine, excerpt: excerpt)],
-                status: .candidate))
+            // P3-4 §2.6: 按 markdown `## `/`### ` 标题分块, 超 maxChunkChars 强制切分.
+            // 每块产出 1 个 candidate Memory, line 是块在原文件的起始行号.
+            // 没标题的纯文本文件作为单块 (1 candidate).
+            // P0-3 闸门 substring check: 块内容必须真在 sourceContents[relPath] (= redactedBody) 里.
+            // - 用 redactedBody (脱敏后) 存 sourceContents (P0-3 闸门要)
+            // - 块用 redactedBody.split 后的子串 (P0-3 substring 必过)
+            let chunks = Self.chunkBody(redactedBody, maxChars: maxChunkChars)
+            let chunked = Self.annotateChunksWithLineNumbers(
+                chunks: chunks,
+                fullBody: redactedBody,
+                bodyStartLine: doc.bodyStartLine)
+            // truncated: 原始 body 超 maxChars 触发 force-split (1 H2 块被切成 ≥2 块)
+            // OR 总长 > maxChars (整文件超, 需用户审查)
+            let truncated = redactedBody.count > maxChunkChars
+            chunkStats[relPath] = ChunkStat(
+                chunks: chunked.count,
+                truncated: truncated,
+                originalChars: redactedBody.count)
+            for (chunkText, chunkLine) in chunked {
+                // P0-3: excerpt 真实化 (= chunkText), 不再恒 200 字符.
+                // sourceContents[relPath] 仍是整 redactedBody, substring check 必过.
+                candidates.append(Memory(
+                    text: chunkText,
+                    sources: [SourceRef(file: relPath, line: chunkLine, excerpt: chunkText)],
+                    status: .candidate))
+            }
             gathered.append(relPath)
             // P0-3: 把脱敏后的 body 存进 sourceContents (供 SourceRefValidator 校验)
             sourceContents[relPath] = redactedBody
@@ -128,7 +171,107 @@ public struct Gatherer {
         return GatherResult(candidates: candidates,
                             gatheredFiles: gathered,
                             redactionCounts: redactionCounts,
-                            sourceContents: sourceContents)
+                            sourceContents: sourceContents,
+                            chunkStats: chunkStats)
+    }
+
+    // MARK: - P3-4 §2.6: chunking (按 markdown 标题分块, 超 maxChars 强制切分)
+
+    /// 把单个 raw 文件的脱敏 body 按 markdown `## `/`### ` 标题分块.
+    /// 行为:
+    /// - 总长 ≤ maxChars: 1 块 (不分块, 不管有几个 H2)
+    /// - 总长 > maxChars: 按 `## ` split (1 块 = 1 标题 + 1 内容, 留 1 块给 intro)
+    /// - 无 H2 但 > maxChars: 整段 1 块 (由外层 force-split 处理)
+    /// - 单块 > maxChars: 强制按 "\n" 切 (避免切到单词中间)
+    /// - 空文本: 0 块 (上游 gather() 已过滤)
+    ///
+    /// P3-4 设计取舍:
+    /// - 用 `## ` 不用 `# `: H1 是文件 title, 不应 split. H2 是真正的章节.
+    /// - 不 trim chunk leading whitespace: 块要保留原行号, 不能 trim 后偏移.
+    static func chunkBody(_ body: String, maxChars: Int) -> [String] {
+        guard !body.isEmpty else { return [] }
+        // 短文本不分块: 短 raw (≤ maxChars) 不应被 H2 split 拆得七零八落 (e.g. 300 字符的
+        // 短笔记里含 2 个 H2, 不应产 2 个 candidate 浪费 LLM 算力).
+        if body.count <= maxChars {
+            return [body]
+        }
+        // 长文本: 按 `## ` split. 1 块 = 1 标题 + 1 内容. intro (开头没标题) = 1 块.
+        var pieces: [String] = []
+        var current = ""
+        let lines = body.components(separatedBy: "\n")
+        for line in lines {
+            if line.hasPrefix("## ") && !current.isEmpty {
+                pieces.append(current)
+                current = line
+            } else {
+                if current.isEmpty {
+                    current = line
+                } else {
+                    current += "\n" + line
+                }
+            }
+        }
+        if !current.isEmpty { pieces.append(current) }
+        // 单块可能超 maxChars (Claude session 一节 50KB).
+        // 超 maxChars → 强制按 maxChars 切 (优先 "\n" 切, 避免切到单词中间).
+        var result: [String] = []
+        for piece in pieces {
+            if piece.count <= maxChars {
+                result.append(piece)
+            } else {
+                var remaining = piece
+                while remaining.count > maxChars {
+                    let cutIdx = remaining.index(remaining.startIndex, offsetBy: maxChars)
+                    let cutSub = remaining[..<cutIdx]
+                    // 找最近的 "\n" 切 → cut AFTER the "\n" (保留词完整)
+                    if let lastNL = cutSub.lastIndex(of: "\n") {
+                        // up to and INCLUDING "\n" (so chunk ends with "\n", 下块从词首开始)
+                        result.append(String(remaining[..<remaining.index(after: lastNL)]))
+                        remaining = String(remaining[remaining.index(after: lastNL)...])
+                    } else {
+                        // 没换行 → 硬切
+                        result.append(String(cutSub))
+                        remaining = String(remaining[cutIdx...])
+                    }
+                }
+                if !remaining.isEmpty { result.append(remaining) }
+            }
+        }
+        return result
+    }
+
+    /// 给每个 chunk 标注在原文件中的起始行号 (1-based).
+    /// 算法: 累加 line 数 (每个 chunk 第一行 = 在 redactedBody 里的行号 + bodyStartLine).
+    /// P0-3 闸门 substring check: chunkText 是 redactedBody 的子串, 必过.
+    static func annotateChunksWithLineNumbers(
+        chunks: [String],
+        fullBody: String,
+        bodyStartLine: Int
+    ) -> [(text: String, line: Int)] {
+        guard !chunks.isEmpty else { return [] }
+        var result: [(text: String, line: Int)] = []
+        var searchStart = fullBody.startIndex
+        for chunk in chunks {
+            // 找 chunk 在 fullBody 的起始 offset
+            let range = fullBody.range(of: chunk, range: searchStart..<fullBody.endIndex)
+            let offset: String.Index
+            if let r = range {
+                offset = r.lowerBound
+            } else {
+                // 找不到 (极端 case, e.g. chunk 被 trim 过). fallback 拿前面 chunk 的结束位置.
+                offset = searchStart
+            }
+            // 算行号: fullBody 从 start 到 offset 的 "\n" 数 + bodyStartLine
+            let prefix = fullBody[fullBody.startIndex..<offset]
+            let lineOffset = prefix.components(separatedBy: "\n").count - 1
+            let lineNumber = bodyStartLine + lineOffset
+            result.append((chunk, lineNumber))
+            // 推进 searchStart (避免同一 chunk 反复 match)
+            if let r = range {
+                searchStart = r.upperBound
+            }
+        }
+        return result
     }
 
     // MARK: - processed 登记（.dream/processed.json，替代写回 raw 的 processed:true）
