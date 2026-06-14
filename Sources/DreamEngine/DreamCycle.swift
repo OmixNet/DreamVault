@@ -166,19 +166,30 @@ public struct DreamCycle {
             do { try git.initIfNeeded() } catch {
                 throw DreamError.gitNotConfigured
             }
-            // — 0b. Preflight：工作区有未提交改动？拒绝运行 —
-            // 理由：dream 只能 commit 引擎自己写的路径（MEMORY.md / .dream / wiki / archive）。
-            // 如果工作区有任何其他未提交改动（用户的 raw、README、配置等），
-            // dream 不应该吞掉它们。让用户先 commit 或 stash，再跑 dream。
+            // — 0b. Preflight：工作区有未提交改动？自动 commit 用户非引擎改动 —
+            // P0 致命修复 (缺陷报告 §2.2): 之前直接 throw DreamError.userDirtyWorkspace,
+            // 强迫用户先手动 commit 自己的 raw/ / README / 配置等改动, 然后才能跑 dream.
+            // 写完笔记直接 Cmd+Q 的用户经常因此几个月 dream 都不起作用.
+            // 修法: 走 git.autoCommitUserChanges() 自动 stage + commit 用户非引擎改动
+            // (走显式 add 路径白名单, 不动引擎路径), 跟引擎 commit 走两个独立 commit.
+            // 用户无感, git 历史可追溯 ([dream auto-save] 前缀).
             do {
                 if try git.hasUserDirtyChanges() {
-                    throw DreamError.userDirtyWorkspace
+                    // 自动 commit 用户非引擎改动
+                    let userCommitHash = try git.autoCommitUserChanges(
+                        message: "[dream auto-save] user edits before nightly run"
+                    )
+                    if let hash = userCommitHash {
+                        FileHandle.standardError.write(Data(
+                            "[DreamCycle] 自动 commit 用户非引擎改动: \(hash.prefix(7))\n".utf8))
+                    }
+                    // 注: 继续跑 dream, 不抛错. 用户有 raw/ 改动也可以安心跑 dream.
                 }
-            } catch is DreamError {
-                throw DreamError.userDirtyWorkspace
             } catch {
-                // hasUserDirtyChanges 本身失败 → 保守拒绝
-                throw DreamError.userDirtyWorkspace
+                // 自动 commit 失败 → 仍跑 dream (raw/ 改动不影响 gather 阶段).
+                // 仅 stderr 提示, 不阻断.
+                FileHandle.standardError.write(Data(
+                    "[DreamCycle] 自动 commit 用户改动失败 (已跳过): \(error.localizedDescription)\n".utf8))
             }
         }
 

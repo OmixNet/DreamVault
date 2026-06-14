@@ -314,9 +314,11 @@ final class DreamCycleIntegrationTests: XCTestCase {
         XCTAssertFalse(outcome.committed, "dryRun 时不应 commit")
     }
 
-    /// 8. 红线：vault 有未提交的"非引擎"改动时，dream 拒绝运行（userDirtyWorkspace）
-    /// 不应该 commit 用户的 raw 改动到 dream commit 里。
-    func testRunOnce_userDirtyWorkspace_aborts() async throws {
+    /// 8. P0 致命修复 (缺陷报告 §2.2): vault 有未提交的"非引擎"改动时,
+    ///    dream 自动 commit 用户改动 (走 autoCommitUserChanges) 然后继续跑,
+    ///    不再抛 userDirtyWorkspace 强迫用户手动 commit.
+    ///    用户写完笔记直接 Cmd+Q 不应让 dream 罢工.
+    func testRunOnce_userDirtyAutoCommits_thenContinues() async throws {
         // 先跑一次，让引擎产出 ledger/wiki 之类 — 制造干净基线
         _ = try writeRaw("2026-06-11-clean.md", body: "基线 raw")
         let cycle = DreamCycle(vaultRoot: tempDir, llm: MockLLMProvider(), git: git)
@@ -324,23 +326,19 @@ final class DreamCycleIntegrationTests: XCTestCase {
 
         // 用户在工作区放一个"非引擎"的未追踪文件
         let userFile = tempDir.appendingPathComponent("user-draft.md")
-        try "用户自己改的文件，不应该被 dream 吞掉".write(to: userFile, atomically: true, encoding: .utf8)
+        try "用户自己改的文件，应该被 dream 自动 commit".write(to: userFile, atomically: true, encoding: .utf8)
 
-        // 再跑一次 — 应该 userDirtyWorkspace 失败，不 commit，不写 processed.json（因为 gather 在 preflight 之后抛错）
-        do {
-            _ = try await cycle.runOnce(now: now)
-            XCTFail("应抛 userDirtyWorkspace")
-        } catch let e as DreamCycle.DreamError {
-            if case .userDirtyWorkspace = e {
-                // ok
-            } else {
-                XCTFail("期望 userDirtyWorkspace，实际 \(e)")
-            }
-        }
+        // 再跑一次 — 不抛错, 走完完整流程
+        let outcome = try await cycle.runOnce(now: now)
+        XCTAssertNotNil(outcome, "P0 修复: 不应抛 userDirtyWorkspace, 跑完整流程")
 
         // 用户文件应原样存在
         let userContent = try String(contentsOf: userFile, encoding: .utf8)
         XCTAssertTrue(userContent.contains("用户自己改的文件"))
+
+        // git 历史应含自动 commit + 引擎 commit
+        let log = (try? git.run(["log", "--oneline"])) ?? ""
+        XCTAssertTrue(log.contains("auto-save"), "git log 应有 [dream auto-save] 自动 commit")
     }
 
     /// 9. 引擎路径（MEMORY.md / .dream/ / wiki/）的脏改动不算"用户改动"，dream 应该照常运行。
