@@ -120,6 +120,10 @@ public enum MarkdownHighlighter {
 
     /// Markdown 链接: [text](url) (非贪婪).
     /// 跳过 wikilink 范围 (WikiLinkExtractor 已标 .link attribute), 避免双重着色.
+    /// P1.3 修复 (缺陷报告 §3.3): 加 .link attribute on text range → NSTextView 点击触发
+    /// delegate.textView(_:clickedOnLink:at:) → 默认走 NSWorkspace.shared.open(url).
+    /// 老实现: 只设 foregroundColor + underline, 不设 .link → 点击无反应, 链接是装饰.
+    /// 新实现: 设 .link 让 .link 范围可点, 用户体验对标 VSCode / Obsidian.
     private static func applyLinkHighlight(to attr: NSMutableAttributedString, skipRanges: [NSRange]) {
         let pattern = #"\[([^\]\n]+?)\]\(([^\s\)]+?)\)"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
@@ -133,11 +137,18 @@ public enum MarkdownHighlighter {
             if skipRanges.contains(where: { NSIntersectionRange($0, fullMatch).length > 0 }) {
                 return
             }
+            // 解析 url 字符串 (不依赖 NSWorkspace, 仅做有效性检查)
+            let urlString = (attr.string as NSString).substring(with: urlRange)
+            let isClickable = URL(string: urlString) != nil
             // text 范围着色 (link 文字)
-            attr.addAttributes([
+            var attrs: [NSAttributedString.Key: Any] = [
                 .foregroundColor: linkColor,
                 .underlineStyle: NSUnderlineStyle.single.rawValue,
-            ], range: textRange)
+            ]
+            if isClickable {
+                attrs[.link] = URL(string: urlString)
+            }
+            attr.addAttributes(attrs, range: textRange)
             // url 范围浅色
             attr.addAttribute(.foregroundColor, value: linkColor.withAlphaComponent(0.7), range: urlRange)
         }

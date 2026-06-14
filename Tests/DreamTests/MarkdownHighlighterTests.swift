@@ -126,7 +126,8 @@ final class MarkdownHighlighterTests: XCTestCase {
     // MARK: - Markdown 链接
 
     /// 8. [text](url) - system teal + 下划线
-    func testMarkdownLink_tealAndUnderline() {
+    /// P1.3 修复 (缺陷报告 §3.3): text 范围还应有 .link attribute 让点击触发 delegate
+    func testMarkdownLink_tealAndUnderline_andClickable() {
         let result = MarkdownHighlighter.highlighted(
             "[click](https://example.com)", baseFont: baseFont, baseColor: baseColor
         )
@@ -134,14 +135,20 @@ final class MarkdownHighlighterTests: XCTestCase {
         let textRange = NSRange(location: 1, length: 5)
         var colorFound: NSColor?
         var underlineFound: Bool = false
+        var linkFound: URL?
         result.enumerateAttribute(.foregroundColor, in: textRange) { value, _, _ in
             if let c = value as? NSColor { colorFound = c }
         }
         result.enumerateAttribute(.underlineStyle, in: textRange) { value, _, _ in
             if let _ = value as? Int { underlineFound = true }
         }
+        result.enumerateAttribute(.link, in: textRange) { value, _, _ in
+            if let u = value as? URL { linkFound = u }
+        }
         XCTAssertNotNil(colorFound, "Markdown 链接应着色")
         XCTAssertTrue(underlineFound, "Markdown 链接应下划线")
+        XCTAssertNotNil(linkFound, "P1.3 修复: text 范围应有 .link attribute (NSTextView 点击触发)")
+        XCTAssertEqual(linkFound?.absoluteString, "https://example.com")
     }
 
     /// 9. wikilink 范围 (skipRanges) 跳过 markdown 链接匹配
@@ -210,5 +217,58 @@ final class MarkdownHighlighterTests: XCTestCase {
         XCTAssertEqual(result.string, "plain text")
         // 应保留 baseFont + baseColor
         XCTAssertGreaterThan(result.length, 0)
+    }
+
+    /// 13. P1.3 修复: 无效 URL 不设 .link attribute (无效 URL 不能点击)
+    ///     例如 [bad](\invalid url) 应仅装饰, 不让 NSTextView 报错
+    func testMarkdownLink_invalidURL_noLinkAttribute() {
+        let result = MarkdownHighlighter.highlighted(
+            "[bad](not a url with spaces)", baseFont: baseFont, baseColor: baseColor
+        )
+        let textRange = NSRange(location: 1, length: 3)  // "bad"
+        var linkFound: URL?
+        result.enumerateAttribute(.link, in: textRange) { value, _, _ in
+            if let u = value as? URL { linkFound = u }
+        }
+        // 验证: 着色 + 下划线仍设 (装饰保留), 但 .link 不设
+        XCTAssertNil(linkFound, "无效 URL 不应有 .link attribute")
+        // url 范围应仍浅色 (装饰可读)
+        let urlRange = NSRange(location: 6, length: result.length - 7)
+        var urlColored: NSColor?
+        result.enumerateAttribute(.foregroundColor, in: urlRange) { value, _, _ in
+            if let c = value as? NSColor { urlColored = c }
+        }
+        XCTAssertNotNil(urlColored, "url 范围仍应浅色装饰")
+    }
+
+    /// 14. P1.3 修复: file:// URL 也设 .link (本地文件可点)
+    func testMarkdownLink_fileURL_clickable() {
+        let result = MarkdownHighlighter.highlighted(
+            "[doc](file:///Users/x/notes.md)", baseFont: baseFont, baseColor: baseColor
+        )
+        let textRange = NSRange(location: 1, length: 3)  // "doc"
+        var linkFound: URL?
+        result.enumerateAttribute(.link, in: textRange) { value, _, _ in
+            if let u = value as? URL { linkFound = u }
+        }
+        XCTAssertNotNil(linkFound, "file:// URL 也应有 .link attribute")
+        XCTAssertEqual(linkFound?.scheme, "file")
+    }
+
+    /// 15. P1.3 修复: wikilink 范围 (skipRanges) 不加 .link attribute (避免双重处理)
+    func testMarkdownLink_skipRanges_noLinkAttribute() {
+        // wikilink (e.g. [[my-note]]) 跟 markdown 链接 ([..](..)) pattern 不同,
+        // 但 applyLinkHighlight 在 skipRanges 跳过时也不应加 .link (避免 wikilink 走两次处理)
+        let text = "[[my-note]]"
+        let wikilinkRange = NSRange(location: 0, length: text.count)
+        let result = MarkdownHighlighter.highlighted(
+            text, baseFont: baseFont, baseColor: baseColor,
+            skipRanges: [wikilinkRange]
+        )
+        var linkFound: URL?
+        result.enumerateAttribute(.link, in: wikilinkRange) { value, _, _ in
+            if let u = value as? URL { linkFound = u }
+        }
+        XCTAssertNil(linkFound, "skipRanges 跳过的范围不应加 .link (WikiLinkExtractor 自己加)")
     }
 }
