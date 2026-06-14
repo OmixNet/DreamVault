@@ -298,6 +298,9 @@ struct UpdateBanner: View {
                 .foregroundColor(.accentColor)
             VStack(alignment: .leading, spacing: 0) {
                 Text("v\(info.latestVersion) 可用（当前 v\(info.currentVersion)）")
+                    // 顺手修 (GUI audit 2026-06-14): dev build currentVersion
+                    // 在 UpdateChecker.init 显式标 "dev", banner 出来
+                    // "v0.11.2 可用（当前 vdev）" 明确标 dev build.
                     .font(.caption).fontWeight(.medium)
                 Text("点击查看 release notes")
                     .font(.caption2)

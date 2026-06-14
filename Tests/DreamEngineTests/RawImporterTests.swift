@@ -156,6 +156,31 @@ final class RawImporterTests: XCTestCase {
         XCTAssertTrue(landedText.contains("title: 我的笔记"), "原 frontmatter 保留")
         XCTAssertTrue(landedText.contains("tags: [a, b]"), "原 tags 保留")
         XCTAssertTrue(landedText.contains("正文内容"), "正文保留")
+        // P1-4 修复 (GUI audit 2026-06-14): 已有 frontmatter 也必须显式补
+        // `processed: false`, 不然 FrontmatterScanner 不能正确分流.
+        XCTAssertTrue(landedText.contains("processed: false"),
+                      "P1-4 修复: 已有 frontmatter 也要显式补 processed: false")
+    }
+
+    /// P1-4 修复: 已有 frontmatter 但已有 processed:true 时, 保留 true 不动
+    /// (用户已声明处理过, dream 不应擅自翻成 false 让其重跑).
+    func testImport_preservesExistingProcessedTrue() throws {
+        let vault = makeTmpVault()
+        let content = """
+        ---
+        title: 已处理
+        processed: true
+        ---
+
+        正文
+        """
+        let src = try makeSourceFile(content: content, ext: "md")
+        let result = RawImporter.importToRaw(sourceURLs: [src], vaultRoot: vault)
+        let landed = result.succeeded[0]
+        let landedText = try String(contentsOf: landed, encoding: .utf8)
+        // processed:true 保留, 不被翻成 false
+        XCTAssertTrue(landedText.contains("processed: true"),
+                      "P1-4 修复: 已显式 processed:true 的文件, 翻成 false 会让 dream 重跑, 不动")
     }
 
     // MARK: - batch_id 一致性

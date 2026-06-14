@@ -296,8 +296,12 @@ struct DreamVaultApp: App {
                     AppActions.exportDiagnostics(model: menuModel)
                 }
             }
-            // View 菜单
-            CommandMenu("View") {
+            // View 菜单 (P1-2 修复 GUI audit 2026-06-14: 老实现 CommandMenu("View")
+            // 新建同名菜单, 导致菜单栏出两个 "View" (系统默认一个 + 新增一个).
+            // 修法: 用 .commands(content:) modifier 追加到系统 View 菜单,
+            // 不要再 CommandMenu("View") 创建新菜单.
+            // CommandGroup(replacing: .toolbar) 之后追加, SwiftUI 自动 merge.
+            CommandGroup(after: .toolbar) {
                 Button("Source") {
                     editorState?.mode = .source
                 }

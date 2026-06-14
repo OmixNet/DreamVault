@@ -28,7 +28,13 @@ public struct EditorPane: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onReceive(model.$selectedFile.compactMap { $0 }) { url in
+        // P0 修复 (GUI audit 2026-06-14): onReceive + compactMap 漏"重复点同 row"
+        // (selectedFile 从 url 改到同 url, Combine 不发新值 → onReceive 不触发 →
+        //  中心区停 Select a note).
+        // 改 onChange 监听所有 selectedFile 变化 (iOS 17 / macOS 14 API).
+        // 配合 list 自身 selection binding, P0-1 (单击/双击 row 不开 file) 修.
+        .onChange(of: model.selectedFile) { newURL in
+            guard let url = newURL else { return }
             // 上层切换文件时：flush 旧 → load 新
             _ = state.openFile(url)
             // P9c-P0-2: 如果打开的是某条 memory 的 wiki 页，强化一下

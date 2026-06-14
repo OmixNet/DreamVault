@@ -182,17 +182,24 @@ if [ "$VERIFY" = "1" ]; then
     fi
 
     # 2) vault 目录可被进程访问（lsof 列 fd）
+    # P1-5 修复 (GUI audit 2026-06-14): 老实现 lsof 找不到 = ⚠ warning 不 fail,
+    # 实际是 P0 阻断 (GUI 还没访问 vault 说明侧栏/编辑器没真起).
+    # 修法: sleep 3s (给 GUI 时间开 file) 再 lsof, 仍找不到 = ❌ FAIL.
+    sleep 3
     if ! lsof -p "$PID" 2>/dev/null | grep -q "$VAULT"; then
-        echo "    ⚠ lsof 找不到 vault 路径（GUI 还没打开它，正常）"
+        echo "    ❌ 进程 3s 内未访问 vault 路径 ($VAULT)"
+        echo "    实际 lsof: $(lsof -p "$PID" 2>/dev/null | head -5)"
+        FAIL=1
     else
         echo "    ✓ 进程打开了 vault"
     fi
 
-    # 3) 日志文件写入
+    # 3) 日志文件写入 (P1-5: 日志空 = ❌ FAIL, 不再 ⚠ warning)
     if [ -s "$LOG_FILE" ]; then
         echo "    ✓ 日志已写入 $(wc -l < "$LOG_FILE") 行"
     else
-        echo "    ⚠ 日志为空"
+        echo "    ❌ 日志为空 ($LOG_FILE)"
+        FAIL=1
     fi
 
     if [ "$FAIL" = "1" ]; then

@@ -135,15 +135,20 @@ public enum RawImporter {
 
     /// 如果 content 还没有 frontmatter（不以下面 `---\n` 开头），加一个 minimal 的
     /// 如果有 frontmatter，按需补 batch_id / source_path 字段
+    ///
+    /// P1-4 修复 (GUI audit 2026-06-14): 已有 frontmatter 时如果不显式补
+    /// `processed: false`, 缺该字段的文件会进 candidate 集, 走老代码 (8h 改动
+    /// 之前) 时不能被 FrontmatterScanner 正确分流. 修法: 已有 frontmatter 时
+    /// 解析 frontmatter 块, 缺 processed 字段就显式补 `processed: false`.
+    /// 不动用户已有的其他字段 (title / tags / source 等), 仅追加.
     static func addFrontmatterIfNeeded(content: String,
                                        originalName: String,
                                        sourcePath: String,
                                        batchID: String?) -> String {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("---") {
-            // 已有 frontmatter → 解析；如果有 processed 字段，保留
-            // 简化：直接 prepend 一行 batch 注释
-            return content
+            // 已有 frontmatter → 解析, 缺 processed 字段就显式补 `processed: false`
+            return ensureProcessedFlag(content: content)
         }
         var frontmatter = "---\n"
         frontmatter += "imported_at: \(isoNow())\n"
@@ -154,6 +159,44 @@ public enum RawImporter {
         frontmatter += "processed: false\n"
         frontmatter += "---\n\n"
         return frontmatter + content
+    }
+
+    /// P1-4 修复: 已有 frontmatter 时确保有 `processed: false` 字段.
+    /// 老实现直接 return content → 缺该字段的文件进 candidate 集时
+    /// FrontmatterScanner 不能正确分流.
+    /// 解析 frontmatter 块 ([0, closeRange]), 缺 processed 就显式补在
+    /// `---` 闭合前的最后一行. 已有 processed: true 保留, 不动.
+    private static func ensureProcessedFlag(content: String) -> String {
+        // 找 frontmatter 块: ---\n...\n---
+        let lines = content.components(separatedBy: "\n")
+        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else {
+            // 实际上 hasPrefix("---") 保证了第一行是 ---, 但防 double-check
+            return content
+        }
+        // 找闭合 ---
+        var closeIdx: Int? = nil
+        for i in 1..<lines.count {
+            if lines[i].trimmingCharacters(in: .whitespaces) == "---" {
+                closeIdx = i
+                break
+            }
+        }
+        guard let closeIdx else { return content }
+
+        let fmLines = Array(lines[1..<closeIdx])
+        let hasProcessed = fmLines.contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return trimmed.hasPrefix("processed:")
+        }
+        if hasProcessed { return content }  // 用户/前序已加, 保留
+
+        // 缺 processed → 补一行在闭合前
+        var newFmLines = fmLines
+        newFmLines.append("processed: false")
+        var newLines = Array(lines[0..<1])  // ---
+        newLines.append(contentsOf: newFmLines)
+        newLines.append(contentsOf: Array(lines[closeIdx...]))
+        return newLines.joined(separator: "\n")
     }
 
     private static func timestamp() -> String {

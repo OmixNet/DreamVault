@@ -61,6 +61,22 @@ import DreamEngine
             context.coordinator.lastSeenExternalText = text
             context.coordinator.lastSavedText = text
             textView.undoManager?.removeAllActions()
+
+            // P0 修复 (GUI audit 2026-06-14 P0-2): NSTextView 装进 SwiftUI 包装后
+            // 不会自动 becomeFirstResponder. 用户报"点编辑区后焦点仍停在 Sidebar
+            // outline, 输入测试文本没有出现在界面" — 根因: textView 装好, 但
+            // firstResponder 是 Sidebar outline (List 节点).
+            // 修法: text 变了 (切文件) → DispatchQueue.main.async 异步抢 firstResponder.
+            // 异步: 避免 view tree 还在 commit 中, 同步抢会被覆盖.
+            // 只在 editable 时抢 (raw 只读, 不抢, 让 outline 留焦点).
+            if isEditable {
+                DispatchQueue.main.async { [weak textView] in
+                    guard let textView, let window = textView.window else { return }
+                    if window.firstResponder !== textView {
+                        window.makeFirstResponder(textView)
+                    }
+                }
+            }
         }
 
         // editable 可能动态变（切 raw vs wiki）

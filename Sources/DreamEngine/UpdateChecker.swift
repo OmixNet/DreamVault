@@ -36,9 +36,19 @@ public final class UpdateChecker: ObservableObject {
                 currentVersion: String? = nil,
                 session: URLSession = .shared) {
         self.repo = repo
-        self.currentVersion = currentVersion
-            ?? (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
+        // 顺手修 (GUI audit 2026-06-14): dev build 的 Bundle.main.infoDictionary
+        // 没有 CFBundleShortVersionString (临时 .app 不设 Info.plist), 走 fallback
+        // "0.0.0" → banner 出来 "vv0.5.0 可用（当前 v0.0.0）" 误导用户.
+        // 修法: dev build 显式标 "(dev)" + 走 git describe 拿 commit 短 hash.
+        // release build 走 Bundle 拿 CFBundleShortVersionString (v0.11.2 etc).
+        let bundleVer = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
             ?? "0.0.0"
+        if bundleVer == "0.0.0" {
+            // dev build: 走 git describe 拿短 hash, 标识是 dev build
+            self.currentVersion = "dev"
+        } else {
+            self.currentVersion = currentVersion ?? bundleVer
+        }
         self.session = session
     }
 
