@@ -7,15 +7,20 @@ import DreamEngine
 @MainActor
 final class FrontmatterInspectorLogicTests: XCTestCase {
 
-    var tempDir: URL!
-    var state: EditorState!
+    nonisolated(unsafe) var tempDir: URL!
+    private var cachedState: EditorState?
+    var state: EditorState {
+        if let cachedState { return cachedState }
+        let newState = EditorState()
+        cachedState = newState
+        return newState
+    }
 
     override func setUpWithError() throws {
         try super.setUpWithError()
         tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("insp-test-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        state = EditorState()
     }
 
     override func tearDownWithError() throws {

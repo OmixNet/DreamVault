@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - 来源引用（防幻觉的基石：每条教训都必须能追溯到 raw 行）
 
-public struct SourceRef: Codable, Equatable, Hashable {
+public struct SourceRef: Codable, Equatable, Hashable, Sendable {
     public let file: String      // raw/ 下的相对路径
     public let line: Int         // 起始行
     public let excerpt: String   // 原文片段，供回读校验与人工审查
@@ -14,7 +14,7 @@ public struct SourceRef: Codable, Equatable, Hashable {
 
 // MARK: - 一条教训 / 记忆
 
-public enum MemoryStatus: String, Codable {
+public enum MemoryStatus: String, Codable, Sendable {
     case candidate   // 单源观察，仅进 wiki 候选区
     case durable     // 多源支撑，进 MEMORY.md
     case archived    // 被衰减降级，移入 archive，可找回
@@ -35,7 +35,7 @@ public enum MemoryKind: String, Codable, Sendable, CaseIterable {
 
 // MARK: - 衰减类别（REFERENCE_SPEC 附录：τ = baseTau × 类型系数）
 
-public enum DecayClass: String, Codable, CaseIterable {
+public enum DecayClass: String, Codable, Sendable, CaseIterable {
     case slow     // 架构决策类，衰减慢（τ × 3.0，默认 ≈ 90 天）
     case normal   // 一般教训（τ × 1.0）
     case fast     // 临时 bug 类，衰减快（τ × 0.3，默认 ≈ 9 天）
@@ -50,7 +50,7 @@ public enum DecayClass: String, Codable, CaseIterable {
     }
 }
 
-public struct Memory: Codable, Identifiable, Equatable {
+public struct Memory: Codable, Identifiable, Equatable, Sendable {
     public let id: String
     public var text: String                 // 提炼出的规则/教训
     public var sources: [SourceRef]          // 至少 1 条；durable 需 ≥2 独立源
@@ -124,7 +124,7 @@ public struct Memory: Codable, Identifiable, Equatable {
 
 // MARK: - 衰减账本（.dream/ledger.json）
 
-public struct Ledger: Codable {
+public struct Ledger: Codable, Sendable {
     public var memories: [Memory]
     public init(memories: [Memory] = []) { self.memories = memories }
 }

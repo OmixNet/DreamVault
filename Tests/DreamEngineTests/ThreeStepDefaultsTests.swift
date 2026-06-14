@@ -64,8 +64,8 @@ final class ThreeStepDefaultsTests: XCTestCase {
         XCTAssertEqual(outcome.acceptedCount, 0,
                        "3 段失败 → 跳过该 candidate → acceptedCount=0 (无教训入账)")
         // ledger 应为空 (关键: 老 fallback=true 会把全文当教训污染 ledger)
-        let ledger = try? Persister.loadLedger(vaultRoot: tmp)
-        XCTAssertEqual(ledger?.memories.count ?? 0, 0,
+        let ledger = Persister.loadLedger(vaultRoot: tmp)
+        XCTAssertEqual(ledger.memories.count, 0,
                        "3 段失败 → 跳过该 candidate → ledger 保持空 (老 fallback=true 会把全文当教训污染)")
     }
 

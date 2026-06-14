@@ -154,7 +154,7 @@ public struct DreamCycle {
     /// - Parameter onStage: 每阶段切换时调用一次（label: gather / consolidate / decay / persist / commit），
     ///   GUI 用此驱动 5 步骤进度条。失败时调用 label: "<stage> failed: <err>"。
     public func runOnce(now: Date = Date(),
-                        onStage: ((String) -> Void)? = nil) async throws -> Outcome {
+                        onStage: (@Sendable (String) -> Void)? = nil) async throws -> Outcome {
         // — 0. 把 raw/ 挂为只读（架构第 1 节末段） —
         // 这是"原则 1 变成机制"的入口。每次 dream 启动都强压一次，确保
         // 任何在两次 dream 之间被 chmod +w 改动过的文件回到 0o555。

@@ -55,11 +55,6 @@ public struct WikilinkIndex {
                 backLinks[link.target, default: []].append(rel)
             }
         }
-        // 算 backLinksCount
-        for (rel, _) in entries {
-            // 简化：从 backLinks 算不直观，改用每 entry 算一次
-            // （Entry 存了 backLinksCount 但要二次扫描）
-        }
         // 重写：每 entry 算
         for (rel, _) in entries {
             var count = 0

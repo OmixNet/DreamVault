@@ -12,7 +12,7 @@ import XCTest
 @MainActor
 final class ReinforcerTests: XCTestCase {
 
-    var tempDir: URL!
+    nonisolated(unsafe) var tempDir: URL!
 
     override func setUpWithError() throws {
         try super.setUpWithError()

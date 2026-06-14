@@ -50,10 +50,12 @@ public final class EditorState: ObservableObject {
     }
 
     deinit {
-        if let ncObserver {
-            NotificationCenter.default.removeObserver(ncObserver)
+        MainActor.assumeIsolated {
+            if let ncObserver {
+                NotificationCenter.default.removeObserver(ncObserver)
+            }
+            debounceCancellable?.cancel()
         }
-        debounceCancellable?.cancel()
     }
 
     private func installAutosavePipeline() {

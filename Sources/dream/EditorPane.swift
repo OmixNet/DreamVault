@@ -180,6 +180,8 @@ public struct EditorPane: View {
                 set: { state.buffer = $0 }
             ),
             isEditable: editable,
+            accessibilityLabel: FrontendPresentation.editorAccessibilityLabel(isEditable: editable),
+            focusToken: state.currentFile?.path,
             fontSize: 13,
             onCommit: { state.saveNow() },
             onDirtyChange: { dirty in state.isDirty = dirty },
@@ -254,6 +256,7 @@ public struct EditorPane: View {
 }
 
 /// 全局持有 MarkdownRenderer 实例（避免每次 render 都新建）
+@MainActor
 public final class MarkdownRendererHolder: ObservableObject {
     public static let shared = MarkdownRendererHolder()
     public let renderer = MarkdownRenderer()

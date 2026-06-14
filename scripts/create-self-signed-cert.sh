@@ -22,7 +22,7 @@ set -e
 CERT_NAME="${DREAMVAULT_CERT_NAME:-DreamVault Developer}"
 KEYCHAIN="${DREAMVAULT_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
 TMPDIR="$(mktemp -d -t dv-cert)"
-trap '/Users/biomatrix/.mavis/bin/mavis-trash "$TMPDIR" 2>/dev/null || /bin/rm -rf "$TMPDIR"' EXIT
+trap '/bin/rm -rf "$TMPDIR"' EXIT
 
 # 已经存在？
 if security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$CERT_NAME"; then

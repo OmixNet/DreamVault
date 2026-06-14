@@ -35,7 +35,7 @@ public final class BudgetManager: ObservableObject {
     }
 
     /// 价格表（粗略）。Ollama 本地 = 0。
-    public static let defaultPrices: [String: PricePer1k] = [
+    public nonisolated static let defaultPrices: [String: PricePer1k] = [
         // Ollama 本地 = 免费
         // OpenAI
         "gpt-4o-mini": .init(inputPer1k: 0.00015, outputPer1k: 0.0006),

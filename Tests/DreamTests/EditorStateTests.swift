@@ -6,16 +6,21 @@ import XCTest
 @MainActor
 final class EditorStateTests: XCTestCase {
 
-    var tempDir: URL!
-    var state: EditorState!
+    nonisolated(unsafe) var tempDir: URL!
+    private var cachedState: EditorState?
+    var state: EditorState {
+        if let cachedState { return cachedState }
+        let newState = EditorState()
+        newState.autosaveDelay = 0.05  // 测试加速：50ms debounce
+        cachedState = newState
+        return newState
+    }
 
     override func setUpWithError() throws {
         try super.setUpWithError()
         tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("editor-state-test-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        state = EditorState()
-        state.autosaveDelay = 0.05  // 测试加速：50ms debounce
     }
 
     override func tearDownWithError() throws {

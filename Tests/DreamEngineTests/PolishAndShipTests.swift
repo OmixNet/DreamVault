@@ -99,7 +99,7 @@ final class PolishAndShipTests: XCTestCase {
     }
 
     func testUpdateChecker_initReadsCurrentVersionFromBundle() {
-        let c = UpdateChecker(repo: "OmixNet/DreamVault", currentVersion: "0.3.0")
+        _ = UpdateChecker(repo: "OmixNet/DreamVault", currentVersion: "0.3.0")
         let info = UpdateChecker.UpdateInfo(
             currentVersion: "0.3.0",
             latestVersion: "0.3.1",

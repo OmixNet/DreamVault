@@ -102,7 +102,6 @@ final class DecayParamsTests: XCTestCase {
     func testEvaluate_fastTenDays_archivesNotWaitingForNinety() {
         let d = Decayer()
         let now = Date()
-        let tenDaysAgo = now.addingTimeInterval(-10 * 86_400)
         // fast τ=9 天, 10 天后 recency ≈ e^(-10/9) ≈ 0.33, w_r contribute 0.165
         // 无 freq 强化, linkage 0 → s ≈ 0.165 < 0.15 边界
         // 实际 s ≈ 0.165 > 0.15 → 老实现 .keep; P3-7 27 天门槛, 10 天不触发 archive

@@ -185,6 +185,51 @@ final class LaunchCorrectnessTests: XCTestCase {
         }
     }
 
+    // MARK: - GUI verify script
+
+    func testBuildAndRunVerify_checksVisibleDreamVaultWindow() throws {
+        let scriptURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("scripts/build_and_run.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        XCTAssertTrue(
+            script.contains("AX GUI window"),
+            "--verify 应检查 DreamVault GUI window，而不只是检查进程参数"
+        )
+        XCTAssertTrue(
+            script.contains("FAIL=1"),
+            "GUI window 缺失时 verify 必须失败"
+        )
+    }
+
+    func testBuildAndRunUsesStableDevAppPathForTCC() throws {
+        let scriptURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("scripts/build_and_run.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        XCTAssertTrue(
+            script.contains("""
+            if [ "$KEEP" = "1" ]; then
+                TMP_APP="/tmp/DreamVault-dev-$TIMESTAMP.app"
+            else
+                TMP_APP="$HOME/Applications/DreamVault-dev.app"
+            fi
+            """),
+            "默认开发包路径应稳定，避免每次时间戳 app 都重新触发 macOS TCC 权限和 Computer Use 识别歧义"
+        )
+    }
+
+    func testBuildAndRunFindsPIDForCurrentBundlePath() throws {
+        let scriptURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("scripts/build_and_run.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        XCTAssertTrue(
+            script.contains("pgrep -f \"$MACOS_BIN\""),
+            "PID 查找必须限定当前 .app 的 binary 路径，不能抓第一个 DreamVault 旧进程"
+        )
+    }
+
     // MARK: - helper
 
     private func makeTmpVault() -> URL {

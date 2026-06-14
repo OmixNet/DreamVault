@@ -12,13 +12,12 @@ import Foundation
 // - 不会抛错（除了 handler 显式 throw）— 失败的语义靠返回错误文本表达
 // - 是 class（非 struct）以便累积 `callCount` 而不打破 protocol 的非 mutating 要求
 public final class MockLLMProvider: LLMProvider, @unchecked Sendable {
-    public typealias Handler = (String, String) throws -> String  // (system, user) -> answer
+    public typealias Handler = @Sendable (String, String) throws -> String  // (system, user) -> answer
     private let handler: Handler
     /// 记录调用次数，便于测试断言
     private let _callCount = NSLock()
     public var callCount: Int {
-        _callCount.lock(); defer { _callCount.unlock() }
-        return _count
+        _callCount.withLock { _count }
     }
     private var _count: Int = 0
 
@@ -27,7 +26,7 @@ public final class MockLLMProvider: LLMProvider, @unchecked Sendable {
     }
 
     public func complete(system: String, user: String) async throws -> String {
-        _callCount.lock(); _count += 1; _callCount.unlock()
+        _callCount.withLock { _count += 1 }
         return try handler(system, user)
     }
 

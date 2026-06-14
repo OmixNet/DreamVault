@@ -11,8 +11,8 @@ struct MainView: View {
     @StateObject private var gitWatcher = GitStatusWatcher()
     @StateObject private var searcher = VaultSearcher()
     @StateObject private var updateChecker = UpdateChecker()
-    @SceneStorage("DreamVault.MainView.showInspector") private var showInspector: Bool = true
-    @SceneStorage("DreamVault.MainView.searchText") private var vaultSearchText: String = ""
+    @AppStorage("DreamVault.MainView.showInspector") private var showInspector: Bool = true
+    @AppStorage("DreamVault.MainView.searchText") private var vaultSearchText: String = ""
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     /// P7-T1: 首次启动弹 welcome sheet
     @State private var showWelcome: Bool = false
@@ -175,15 +175,15 @@ struct MainView: View {
             gitWatcher.refresh(vaultRoot: model.vaultRoot)
             NotificationCenter.default.addObserver(
                 forName: .showVaultSearch, object: nil, queue: .main
-            ) { _ in openSearch() }
+            ) { _ in Task { @MainActor in openSearch() } }
             // P2-2: 菜单栏 Graph 触发
             NotificationCenter.default.addObserver(
                 forName: .showKnowledgeGraph, object: nil, queue: .main
-            ) { _ in showGraph = true }
+            ) { _ in Task { @MainActor in showGraph = true } }
             // P2-3: 菜单栏 Insert Wikilink
             NotificationCenter.default.addObserver(
                 forName: .showInsertWikilink, object: nil, queue: .main
-            ) { _ in showInsertWikilink = true }
+            ) { _ in Task { @MainActor in showInsertWikilink = true } }
             // P7-T1: first-run welcome
             // P2-4: 偶然唤回 — vault 启动时挑 1 条 30+ 天没看的 durable
             if serendipityPick == nil {
@@ -439,6 +439,19 @@ struct VaultBrowser: View {
         let failed: Int
     }
 
+    private final class DropURLCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var urls: [URL] = []
+
+        func append(_ url: URL) {
+            lock.withLock { urls.append(url) }
+        }
+
+        func snapshot() -> [URL] {
+            lock.withLock { urls }
+        }
+    }
+
     @ViewBuilder
     private var importHintRow: some View {
         Button {
@@ -479,16 +492,16 @@ struct VaultBrowser: View {
     /// 处理拖入的 URLs（Finder 拖文件进来）
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         let group = DispatchGroup()
-        var collected: [URL] = []
+        let collector = DropURLCollector()
         for p in providers {
             group.enter()
             _ = p.loadObject(ofClass: URL.self) { url, _ in
-                if let u = url { collected.append(u) }
+                if let u = url { collector.append(u) }
                 group.leave()
             }
         }
         group.notify(queue: .main) {
-            importURLs(collected)
+            importURLs(collector.snapshot())
         }
         return true
     }
@@ -550,6 +563,10 @@ struct VaultBrowser: View {
         let body = try? String(contentsOf: url, encoding: .utf8)
         let title = FrontendPresentation.sidebarTitle(relPath: relPath, body: body)
         let subtitle = FrontendPresentation.sidebarSubtitle(relPath: relPath)
+        let accessibilityLabel = FrontendPresentation.sidebarAccessibilityLabel(
+            title: title,
+            subtitle: subtitle
+        )
         HStack(spacing: 8) {
             Image(systemName: system).foregroundColor(tint)
                 .frame(width: 16)
@@ -567,6 +584,14 @@ struct VaultBrowser: View {
             }
         }
         .tag(url as URL?)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            model.selectedFile = url
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(relPath)
+        .accessibilityHint("Open in the editor")
         .contextMenu {
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([url])

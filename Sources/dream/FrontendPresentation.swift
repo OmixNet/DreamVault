@@ -72,6 +72,15 @@ enum FrontendPresentation {
         return relPath == filename ? nil : relPath
     }
 
+    static func sidebarAccessibilityLabel(title: String, subtitle: String?) -> String {
+        guard let subtitle, !subtitle.isEmpty, subtitle != title else { return title }
+        return "\(title), \(subtitle)"
+    }
+
+    static func editorAccessibilityLabel(isEditable: Bool) -> String {
+        isEditable ? "Markdown editor" : "Read-only Markdown viewer"
+    }
+
     static func searchResultTitle(relPath: String, body: String?) -> String {
         sidebarTitle(relPath: relPath, body: body)
     }

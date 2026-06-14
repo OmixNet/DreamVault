@@ -46,7 +46,7 @@ public struct ConsolidationConfig: Sendable {
     }
 }
 
-public struct Consolidator {
+public struct Consolidator: Sendable {
     public let llm: LLMProvider
     public let config: ConsolidationConfig
     public let redactor: Redactor
@@ -382,7 +382,6 @@ public struct Consolidator {
             var iter = raw.makeIterator()
             var inflight = 0
             var collected: [Memory] = []
-            var firstError: Error?
 
             // 用一个 semaphore-style 模式：保持 ≤ limit 个任务在跑
             func addNext() {
@@ -392,7 +391,7 @@ public struct Consolidator {
                     do {
                         var localCount = 0
                         let result = try await self.consolidate3StepOne(m, fallback: fallback, rejectedFabricated: &localCount)
-                        await counter.add(localCount)
+                        counter.add(localCount)
                         return result
                     } catch {
                         // P3-3 评审 §1.2 修复: 3 段失败**不**回退 2 步 (那把全文当教训污染 ledger).
@@ -400,8 +399,7 @@ public struct Consolidator {
                         // 留明晚重试 (因为它的 raw/ 没被标 processed, 下次 gather 会重新收集).
                         // 设计取舍: 不在 DreamCycle 暴露 "deferred" 计数, onStage 已经会报
                         // "consolidate failed" 1 次; 真实部署看 dream-report 跟 log 知道哪些 skip.
-                        await counter.addError()  // 失败计数 (可观测, 调试用)
-                        if firstError == nil { firstError = error }
+                        counter.addError(error)  // 失败计数 (可观测, 调试用)
                         return []
                     }
                 }
@@ -416,14 +414,14 @@ public struct Consolidator {
             }
             // fallback=false 模式：concurrency=1 时错误会自然抛出（serial 不吞错）。
             // concurrency>1 时 firstError 标记首个错误，但只警告，不抛（保护整批）。
-            if let firstError = firstError, fallback == false {
+            if let firstErrorDescription = counter.firstErrorDescription(), fallback == false {
                 // serial 模式下已经 throw，这里只会在 concurrency>1 时进。
                 // 用户要 hard-fail 的语义应通过 concurrency=1 实现。
                 FileHandle.standardError.write(Data(
-                    "[Consolidator] 三段失败 (fallback=false 但吞掉以保护整批): \(firstError)\n".utf8))
+                    "[Consolidator] 三段失败 (fallback=false 但吞掉以保护整批): \(firstErrorDescription)\n".utf8))
             }
             // P0-3: 并发路径回填 inout 计数
-            rejectedFabricated += await counter.value()
+            rejectedFabricated += counter.value()
             return collected
         }
     }
@@ -437,19 +435,27 @@ public struct Consolidator {
         private let lock = NSLock()
         private var v: Int = 0
         private var errors: Int = 0  // P3-3: 3 段失败计数
+        private var firstErrorText: String?
+
         func add(_ n: Int) {
-            lock.lock(); v += n; lock.unlock()
+            lock.withLock { v += n }
         }
-        func addError() {
-            lock.lock(); errors += 1; lock.unlock()
+
+        func addError(_ error: Error) {
+            lock.withLock {
+                errors += 1
+                if firstErrorText == nil {
+                    firstErrorText = String(describing: error)
+                }
+            }
         }
-        func value() async -> Int {
-            lock.lock(); defer { lock.unlock() }
-            return v
+
+        func value() -> Int {
+            lock.withLock { v }
         }
-        func errorCount() async -> Int {
-            lock.lock(); defer { lock.unlock() }
-            return errors
+
+        func firstErrorDescription() -> String? {
+            lock.withLock { firstErrorText }
         }
     }
 
@@ -457,7 +463,7 @@ public struct Consolidator {
     private func consolidate3StepSerial(_ raw: [Memory], fallback: Bool,
                                          rejectedFabricated: inout Int) async throws -> [Memory] {
         var out: [Memory] = []
-        for var m in raw {
+        for m in raw {
             out.append(contentsOf: try await consolidate3StepOne(m, fallback: fallback, rejectedFabricated: &rejectedFabricated))
         }
         return out

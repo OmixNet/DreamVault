@@ -360,14 +360,51 @@ final class TestableOllamaNativeProvider: LLMProvider, @unchecked Sendable {
     }
 }
 
+private typealias MockURLProtocolHandler = (URLRequest) -> (statusCode: Int, bodyJSON: [String: Any])
+
+private final class MockURLProtocolState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _currentHandler: MockURLProtocolHandler?
+    private var _lastRequest: URLRequest?
+    private var _lastRequestBodyJSON: [String: Any] = [:]
+
+    var currentHandler: MockURLProtocolHandler? {
+        get { lock.withLock { _currentHandler } }
+        set { lock.withLock { _currentHandler = newValue } }
+    }
+
+    var lastRequest: URLRequest? {
+        get { lock.withLock { _lastRequest } }
+        set { lock.withLock { _lastRequest = newValue } }
+    }
+
+    var lastRequestBodyJSON: [String: Any] {
+        get { lock.withLock { _lastRequestBodyJSON } }
+        set { lock.withLock { _lastRequestBodyJSON = newValue } }
+    }
+}
+
 /// MockURLProtocol — 拦截 URLSession 请求, 返 mock response, 记录请求 path/body.
 /// 重要: URLProtocol 走 class 派发, protocolClasses 注册的是类不是实例. 所以状态必须
 /// 走 static (类共享). 每个测试 setUp 时重置 `current` (currentHandler).
 final class MockURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let state = MockURLProtocolState()
+
     /// 当前测试期望的 handler (每个 test setUp 时设). nil → 走 defaultHandler
-    static var currentHandler: ((URLRequest) -> (statusCode: Int, bodyJSON: [String: Any]))? = nil
-    static var lastRequest: URLRequest?
-    static var lastRequestBodyJSON: [String: Any] = [:]
+    fileprivate static var currentHandler: MockURLProtocolHandler? {
+        get { state.currentHandler }
+        set { state.currentHandler = newValue }
+    }
+
+    static var lastRequest: URLRequest? {
+        get { state.lastRequest }
+        set { state.lastRequest = newValue }
+    }
+
+    static var lastRequestBodyJSON: [String: Any] {
+        get { state.lastRequestBodyJSON }
+        set { state.lastRequestBodyJSON = newValue }
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }

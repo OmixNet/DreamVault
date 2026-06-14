@@ -72,7 +72,7 @@ final class WikilinkIndexTests: XCTestCase {
     }
 
     func testParseWikilink_pathStyle() {
-        let (target, label) = WikilinkIndex.parseWikilink("wiki/concepts/foo")
+        let (target, _) = WikilinkIndex.parseWikilink("wiki/concepts/foo")
         XCTAssertEqual(target, "wiki/concepts/foo")
     }
 

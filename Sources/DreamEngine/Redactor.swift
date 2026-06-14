@@ -9,7 +9,7 @@ import Foundation
 /// - raw/ 原文件永不被改写（只读层）；脱敏只作用于进 ledger 的副本
 public struct Redactor: Sendable {
 
-    public struct Rule {
+    public struct Rule: @unchecked Sendable {
         public let label: String              // 占位符类型，如 API_KEY
         public let pattern: NSRegularExpression
         public init(label: String, pattern: String, options: NSRegularExpression.Options = []) {
@@ -73,7 +73,7 @@ public struct Redactor: Sendable {
              pattern: #"(?<!\d\.)(?<!version )(?<!Version )(?<![Vv]ersion )(?<!v0\.)(?<!v1\.)(?<!v2\.)(?<!v3\.)(?<!v4\.)(?<!v5\.)(?<!v6\.)(?<!v7\.)(?<!v8\.)(?<!v9\.)(?<![版本] )(?<![版本号] )(?<!Build )(?<!build-)\b(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}(?!\d)(?!\.\d)"#),
     ]
 
-    public struct Report {
+    public struct Report: Sendable {
         public var redactedText: String
         public var counts: [String: Int]   // 每类命中次数，供审查
         public var hadSensitive: Bool { !counts.isEmpty }

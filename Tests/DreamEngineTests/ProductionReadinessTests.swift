@@ -74,7 +74,7 @@ final class ProductionReadinessTests: XCTestCase {
     // MARK: - VaultSearcher (smoke test, 不要求 mdfind 命中)
 
     func testVaultSearcher_emptyQuery_noResults() async {
-        let searcher = await VaultSearcher()
+        let searcher = VaultSearcher()
         await MainActor.run {
             searcher.query = ""
             searcher.search(vaultRoot: URL(fileURLWithPath: "/tmp"))

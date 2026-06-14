@@ -124,4 +124,25 @@ final class FrontendPresentationTests: XCTestCase {
         )
         XCTAssertNil(FrontendPresentation.searchResultSubtitle(relPath: "MEMORY.md"))
     }
+
+    func testSidebarAccessibilityLabelIncludesTitleAndPath() {
+        XCTAssertEqual(
+            FrontendPresentation.sidebarAccessibilityLabel(
+                title: "Concept Alpha",
+                subtitle: "wiki/concepts/concept-alpha.md"
+            ),
+            "Concept Alpha, wiki/concepts/concept-alpha.md"
+        )
+    }
+
+    func testEditorAccessibilityLabelDistinguishesEditableAndReadOnly() {
+        XCTAssertEqual(
+            FrontendPresentation.editorAccessibilityLabel(isEditable: true),
+            "Markdown editor"
+        )
+        XCTAssertEqual(
+            FrontendPresentation.editorAccessibilityLabel(isEditable: false),
+            "Read-only Markdown viewer"
+        )
+    }
 }

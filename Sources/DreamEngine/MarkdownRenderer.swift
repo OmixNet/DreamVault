@@ -267,7 +267,7 @@ public struct MarkdownRenderer {
                     return row[idx].count
                 }.max() ?? 8
             }
-            var out = NSMutableAttributedString()
+            let out = NSMutableAttributedString()
             for (ri, row) in rows.enumerated() {
                 var line = ""
                 for ci in 0..<colCount {

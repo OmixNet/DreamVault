@@ -3,7 +3,6 @@ import XCTest
 import AppKit
 
 /// P3-C3: DreamCycle.runOnce onStage 回调应按顺序触发 5 步。
-@MainActor
 final class DreamStageCallbackTests: XCTestCase {
 
     func testRunOnce_emitsGatherEvent() async throws {
@@ -28,15 +27,24 @@ final class DreamStageCallbackTests: XCTestCase {
     // MARK: - helper
 
     private func runDreamCollectingEvents(vault: URL) async -> [String] {
-        await withCheckedContinuation { cont in
-            var events: [String] = []
-            let cycle = DreamCycle(vaultRoot: vault, llm: MockLLMProvider(), git: nil)
-            Task {
-                _ = try? await cycle.runOnce { event in
-                    events.append(event)
-                }
-                cont.resume(returning: events)
+        let events = EventCollector()
+        let cycle = DreamCycle(vaultRoot: vault, llm: MockLLMProvider(), git: nil)
+        _ = try? await cycle.runOnce { event in
+            events.append(event)
             }
+        return events.snapshot()
+    }
+
+    private final class EventCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var events: [String] = []
+
+        func append(_ event: String) {
+            lock.withLock { events.append(event) }
+        }
+
+        func snapshot() -> [String] {
+            lock.withLock { events }
         }
     }
 

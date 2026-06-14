@@ -2,7 +2,7 @@
 
 macOS 原生 Markdown 知识库 + dream 夜间记忆整理。本仓库包含 **内核**（DreamEngine 库 + 端到端测试 + 文档）、**dream CLI**、**dream SwiftUI GUI** 和 **launchd 夜间调度**。
 
-**当前版本：v0.4.0**（254 tests, 0 failures，merge commit `9f051bf`）。
+**当前开发快照**：严格测试门禁 `687 tests, 7 skipped, 0 failures`；发布包版本通过 `DREAMVAULT_VERSION` 指定。
 
 ## 跑起来
 
@@ -11,7 +11,18 @@ export PATH="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.
 swift test
 ```
 
-跑全套单元测试 + 集成测试：**184/184 通过**（v0.2.0 全部 4 任务编辑器升级 + P0 入口修复后的总数）。
+跑全套单元测试 + 集成测试建议使用 Swift 6 并发门禁：
+
+```bash
+env CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-module-cache" \
+  swift test --disable-sandbox \
+  -Xswiftc -module-cache-path -Xswiftc "$PWD/.build/swift-module-cache" \
+  -Xswiftc -warnings-as-errors \
+  -Xswiftc -warn-concurrency \
+  -Xswiftc -strict-concurrency=complete
+```
+
+当前验证结果：**687 tests, 7 skipped, 0 failures**。skip 来自当前机器缺少 NaturalLanguage embedding 系统模型和 Keychain 沙盒限制。
 
 > **环境提示**：本机若 `swift` driver spawn 子命令失败（找不到 `swift-test` 等），需把 Xcode toolchain 加进 PATH。
 > 这是因为 `/usr/bin/swift`（Apple CLT）只是个 multi-call driver，真正的 `swift-test` / `swift-build` 在 Xcode toolchain 里。
@@ -129,63 +140,66 @@ osascript -e 'tell application "System Events" to tell process "DreamVault" to g
 → windows=1 title="DreamVault" subrole=AXStandardWindow
 ```
 
-## 分发（代码签名 + DMG，v0.2.1 起）
+## 自用/熟人分发（代码签名 + DMG）
 
-给身边人装需要 (a) 代码签名让 macOS 认这 app，(b) DMG 提供标准 macOS 拖拽安装体验。
+你现在的目标是自己用和周围人用，不需要 Apple Developer ID，也不需要 notarization。默认流程只做本地可验证 `.app`、拖拽安装 DMG、基础签名与挂载检查。
 
-### 1. 生成自签名 cert（一次性，0 成本）
+### 1. 自己用
+
+```bash
+DREAMVAULT_VERSION=0.3.0 bash scripts/build-app.sh
+open -n ~/Applications/DreamVault.app --args app --vault ~/MyVault
+```
+
+如果没有 codesign identity，脚本会自动使用 ad-hoc 签名。这对本机使用足够。
+
+### 2. 给周围人用
+
+```bash
+DREAMVAULT_VERSION=0.3.0 bash scripts/build-dmg.sh
+bash scripts/release-check.sh
+```
+
+默认输出：`~/Desktop/DreamVault-<version>.dmg`。DMG 里有 `DreamVault.app` 和 `/Applications` 软链接，用户双击挂载后拖到 Applications 即可。
+
+`release-check.sh` 会检查 Info.plist、主二进制、签名、Gatekeeper 评估、DMG 是否能挂载，以及 DMG 里是否包含安装所需内容。没有 stapled notarization ticket 在这个使用场景下是正常的。
+
+### 3. 对方第一次打开时
+
+因为不是 Apple Developer ID 公证包，朋友第一次打开可能会看到“无法验证开发者”。处理方式：
+
+1. 在 Finder 里右键 `DreamVault.app`。
+2. 选择 Open。
+3. 弹窗里再次选择 Open。
+
+如果仍被拦，到 System Settings → Privacy & Security，点 Open Anyway。
+
+### 4. 自签名证书（可选）
+
+ad-hoc 对自用足够。自签名的价值是让包有一个稳定的本地签名身份，但它仍然不是 Apple 认可的开发者身份，朋友第一次打开依旧会被 Gatekeeper 拦。
 
 ```bash
 bash scripts/create-self-signed-cert.sh
-# 生成 Common Name "DreamVault Developer" 的 4096-bit RSA cert，10 年有效期
-# 导入到 ~/Library/Keychains/login.keychain-db
-# 之后 codesign 自动用这个 identity
-```
-
-跟 Apple Developer ID 的差别：
-- **Developer ID** = $99/年 Apple Developer Program + 真公证 + Gatekeeper 不拦
-- **自签名** = 0 成本 + 第一次开 Gatekeeper 拦 + 用户 Right-click → Open 一次性绕过
-
-### 2. Build + 签名 .app
-
-```bash
-bash scripts/build-app.sh
-# 5 步：swift build -c release → 拷 binary → 写 Info.plist →
-#       codesign --options=runtime --sign "DreamVault Developer" → 验证
-#
-# 输出：~/Applications/DreamVault.app
-#       spctl 评估：accepted (override=security disabled)
-```
-
-跳过签名：`DREAMVAULT_SKIP_SIGN=1 bash scripts/build-app.sh`
-指定别的 identity：`DREAMVAULT_SIGN_IDENTITY="<name>" bash scripts/build-app.sh`
-
-### 3. 打 DMG
-
-```bash
+DREAMVAULT_SIGN_IDENTITY="DreamVault Developer" bash scripts/build-app.sh
 bash scripts/build-dmg.sh
-# 输出：~/Desktop/DreamVault-0.2.1.dmg（约 760 KB，UDZO 压缩）
-# 包含：DreamVault.app + /Applications 软链接
-# 用户双击 → Finder 弹出 → 拖到 Applications 完成安装
 ```
 
-### 4. 给身边人
+### 5. 正式上线路径（暂时不用）
 
-把这个 DMG 文件（`DreamVault-0.2.1.dmg`）丢过去。他们的第一次安装：
-1. 双击 DMG → Finder 弹出
-2. 把 DreamVault.app 拖到 Applications
-3. 第一次启动会弹"无法验证开发者" → System Settings → Privacy & Security → Open Anyway
-4. 之后启动就正常了（cert 已被信任）
+如果未来要做面向陌生用户的公开分发，再需要 Apple Developer Program、Developer ID Application 证书和 notarization：
 
-### Developer ID 升级路径
+```bash
+DREAMVAULT_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+DREAMVAULT_NOTARY_PROFILE="DreamVaultNotary" \
+DREAMVAULT_VERSION="0.3.0" \
+bash scripts/sign-and-notarize.sh
+```
 
-等你买了 Apple Developer Program（$99/年）之后：
-1. 从 Xcode → Settings → Accounts → 你的 Apple ID → Manage Certificates → "+" → Developer ID Application
-2. cert 导入 keychain 后 `security find-identity -p codesigning` 能看到
-3. build-app.sh 自动选用第一个 identity（Developer ID 排在前）
-4. 公证：xcrun notarytool submit DreamVault-0.2.1.dmg --keychain-profile <profile> --wait
-5. xcrun stapler staple DreamVault-0.2.1.dmg
-6. spctl --assess --type execute -vv ~/Applications/DreamVault.app 评估变成 accepted（不再 override）
+最终门禁：
+
+```bash
+DREAMVAULT_REQUIRE_DISTRIBUTION=1 bash scripts/release-check.sh
+```
 
 ## 夜间调度（launchd 已实现）
 

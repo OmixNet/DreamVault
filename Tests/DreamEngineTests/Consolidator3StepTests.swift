@@ -20,8 +20,7 @@ final class Consolidator3StepTests: XCTestCase {
         private let _lock = NSLock()
         private var _callCount: Int = 0
         var callCount: Int {
-            _lock.lock(); defer { _lock.unlock() }
-            return _callCount
+            _lock.withLock { _callCount }
         }
 
         init(analysisJSON: String, draftsJSON: String, verifyAnswer: String = "YES") {
@@ -31,7 +30,7 @@ final class Consolidator3StepTests: XCTestCase {
         }
 
         func complete(system: String, user: String) async throws -> String {
-            _lock.lock(); _callCount += 1; _lock.unlock()
+            _lock.withLock { _callCount += 1 }
             if system.contains("分析师") { return analysisJSON }
             if system.contains("提炼员") { return draftsJSON }
             if system.contains("事实校验器") { return verifyAnswer }
@@ -298,7 +297,7 @@ final class Consolidator3StepTests: XCTestCase {
         // 想测到 verify 调用就得给一个非空 draftsJSON。
         let c3 = Consolidator(llm: llm,
                               config: ConsolidationConfig(useThreeStepCoT: true, concurrency: 1))
-        var cnt3 = 0; let r3 = try await c3.consolidateSmart([makeCandidate()]); _ = r3.accepted; _ = r3.rejectedFabricated
+        let r3 = try await c3.consolidateSmart([makeCandidate()]); _ = r3.accepted; _ = r3.rejectedFabricated
         let threeStepCount = llm.callCount
         XCTAssertGreaterThanOrEqual(threeStepCount, 2, "3 段 CoT 至少 analyze + generate = 2 次 LLM 调用")
 
@@ -306,7 +305,7 @@ final class Consolidator3StepTests: XCTestCase {
         let llm2 = StagedLLM(analysisJSON: "", draftsJSON: "", verifyAnswer: "YES")
         let c2 = Consolidator(llm: llm2,
                               config: ConsolidationConfig(useThreeStepCoT: false, concurrency: 1))
-        var cnt2 = 0; let r2 = try await c2.consolidateSmart([makeCandidate()]); _ = r2.accepted; _ = r2.rejectedFabricated
+        let r2 = try await c2.consolidateSmart([makeCandidate()]); _ = r2.accepted; _ = r2.rejectedFabricated
         XCTAssertEqual(llm2.callCount, 1, "2 步快速路径只 verify 1 次")
     }
 

@@ -19,6 +19,8 @@ import DreamEngine
 
     @Binding var text: String
     let isEditable: Bool
+    let accessibilityLabel: String
+    let focusToken: String?
     let fontSize: CGFloat
     let onCommit: () -> Void        // 切文件/run dream/关窗前调用（autosave 也走这条）
     let onDirtyChange: (Bool) -> Void  // 通知 SwiftUI dirty 状态变化
@@ -35,6 +37,8 @@ import DreamEngine
         context.coordinator.scrollView = scrollView
         context.coordinator.lastSavedText = text
         applyAttributedText(to: textView, from: text)
+        configureAccessibility(scrollView: scrollView, textView: textView)
+        requestFocusIfNeeded(textView, coordinator: context.coordinator)
         // P1 修复 (缺陷报告 §3.3 P1.1): 行号 gutter
         // 老实现: 无行号. 笔记编辑器必备.
         // 新实现: 装 NSTextView 自带 NSRulerView (lineNumbers), NSTextView 自动算行数
@@ -84,6 +88,8 @@ import DreamEngine
             textView.isEditable = isEditable
             textView.isSelectable = true
         }
+        configureAccessibility(scrollView: scrollView, textView: textView)
+        requestFocusIfNeeded(textView, coordinator: context.coordinator)
     }
 
     /// P2-3: Source 模式也走 attributed string — 标 wikilink (蓝色 + 下划线 + .link)
@@ -118,9 +124,28 @@ import DreamEngine
 
     public func makeCoordinator() -> Coordinator { Coordinator() }
 
+    private func configureAccessibility(scrollView: NSScrollView, textView: NSTextView) {
+        scrollView.setAccessibilityIdentifier("DreamVaultMarkdownEditorScrollView")
+        scrollView.setAccessibilityLabel(accessibilityLabel)
+        textView.setAccessibilityIdentifier("DreamVaultMarkdownEditor")
+        textView.setAccessibilityLabel(accessibilityLabel)
+        textView.setAccessibilityRole(.textArea)
+    }
+
+    private func requestFocusIfNeeded(_ textView: NSTextView, coordinator: Coordinator) {
+        guard isEditable, coordinator.lastFocusToken != focusToken else { return }
+        coordinator.lastFocusToken = focusToken
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView, textView.window?.firstResponder !== textView else { return }
+            textView.window?.makeFirstResponder(textView)
+        }
+    }
+
     private func configureTextView(_ textView: NSTextView, coordinator: Coordinator) {
         textView.isEditable = isEditable
         textView.isSelectable = true
+        textView.isRichText = false
+        textView.importsGraphics = false
         textView.allowsUndo = true
         textView.usesFindBar = true           // Cmd-F 调出系统 Find Bar
         textView.isIncrementalSearchingEnabled = true
@@ -162,11 +187,13 @@ import DreamEngine
 
     // MARK: - Coordinator
 
+    @MainActor
     public final class Coordinator: NSObject, NSTextViewDelegate {
         weak var textView: NSTextView?
         weak var scrollView: NSScrollView?
         var lastSavedText: String = ""
         var lastSeenExternalText: String = ""
+        var lastFocusToken: String?
         var onCommit: (() -> Void)?
         var onDirtyChange: ((Bool) -> Void)?
         var onWikilink: ((URL) -> Void)?
@@ -180,18 +207,14 @@ import DreamEngine
         public func textViewDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             let newText = textView.string
-            // 通知 SwiftUI（text 双向绑定）
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                // 通过 NotificationCenter 把新文本传给 SwiftUI 端
-                NotificationCenter.default.post(
-                    name: .nstextViewDidChange, object: nil,
-                    userInfo: ["text": newText]
-                )
-                // 脏检查
-                let isDirty = (newText != self.lastSavedText)
-                self.onDirtyChange?(isDirty)
-            }
+            // 通过 NotificationCenter 把新文本传给 SwiftUI 端
+            NotificationCenter.default.post(
+                name: .nstextViewDidChange, object: nil,
+                userInfo: ["text": newText]
+            )
+            // 脏检查
+            let isDirty = (newText != lastSavedText)
+            onDirtyChange?(isDirty)
         }
 
         // P2-A2: NSTextView 点 .link attribute 触发。dreamvault:// 拦截处理；

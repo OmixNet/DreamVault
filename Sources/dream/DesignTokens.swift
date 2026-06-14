@@ -77,7 +77,7 @@ public enum AppShadow {
     public static let lg = ShadowStyle(color: .black.opacity(0.12), radius: 8, x: 0, y: 4)
 }
 
-public struct ShadowStyle: Equatable {
+public struct ShadowStyle: Equatable, Sendable {
     public let color: Color
     public let radius: CGFloat
     public let x: CGFloat

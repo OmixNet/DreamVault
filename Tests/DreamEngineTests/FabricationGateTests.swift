@@ -88,13 +88,19 @@ final class FabricationGateIntegrationTests: XCTestCase {
     /// Mock LLM: 3 步走 analyze → generate → verify
     /// 按 callCount 区分 phase. analyze 假装分析完毕, generate 返回 draft JSON (含 sourceExcerpt),
     /// verify 接受 YES (否则 3 步路径直接走 fail 不测到 gate)
-    final class FabricatedDraftLLM: LLMProvider {
+    final class FabricatedDraftLLM: LLMProvider, @unchecked Sendable {
         let fakeExcerpt: String
-        var callCount = 0
+        private let lock = NSLock()
+        private var callCount = 0
+
         init(fakeExcerpt: String) { self.fakeExcerpt = fakeExcerpt }
+
         func complete(system: String, user: String) async throws -> String {
-            callCount += 1
-            switch callCount {
+            let nextCallCount = lock.withLock {
+                callCount += 1
+                return callCount
+            }
+            switch nextCallCount {
             case 1:
                 // analyze
                 return #"{"category":"observation","key":"fake-key"}"#

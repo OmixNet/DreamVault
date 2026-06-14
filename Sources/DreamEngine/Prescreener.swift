@@ -65,7 +65,6 @@ public struct Prescreener {
 
         for cand in candidates {
             let candTokens = TextEntityTokens.extract(cand.text)
-            let candNeighbors = graph.neighbors(of: cand.id)
             let candVec = candEmbeddings[cand.id]
 
             // P3-6 follow-up: embedding 预筛 topK 模式

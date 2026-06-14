@@ -34,8 +34,9 @@ struct DreamEntry {
         return firstArg == nil
     }
     private static let legacyInitialVaultKey = "DreamVaultInitialVault"
-    private static var processLaunchVaultPath: String?
+    private static let launchVaultState = LaunchVaultState()
 
+    @MainActor
     static func main() {
         let args = Array(CommandLine.arguments.dropFirst())
         let firstArg = args.first
@@ -66,12 +67,13 @@ struct DreamEntry {
     /// 启动 SwiftUI GUI：必须比 NSApplication init 早设 UserDefaults，
     /// 否则 CFPrefsD 会在 applicationWillFinishLaunching 之前加载默认 true，
     /// 卡在 "Restoring windows" 然后 0 窗出来。
+    @MainActor
     private static func launchGUI(args: [String]) {
         // 把 --vault / -v 解析出来放进进程内缓存；UserDefaults 只保留为旧版本桥接。
         // SwiftUI @StateObject 和 NSApplicationDelegate 的初始化顺序在不同启动方式下不稳定，
         // 所以不能靠一个会被清掉的临时 UserDefaults key 作为唯一来源。
         if let vault = parseVaultArg(args) {
-            processLaunchVaultPath = vault
+            launchVaultState.path = vault
             UserDefaults.standard.set(vault, forKey: legacyInitialVaultKey)
         }
         UserDefaults.standard.set(false, forKey: "ApplePersistenceIgnoreState")
@@ -116,11 +118,11 @@ struct DreamEntry {
     /// 5. ~/.dreamvault
     /// 用在 AppDelegate 的 raw chmod 保护，确保自定义 vault 也能被挂只读。
     static func resolveInitialVault() -> URL {
-        if let processLaunchVaultPath = nonEmptyPath(processLaunchVaultPath) {
+        if let processLaunchVaultPath = nonEmptyPath(launchVaultState.path) {
             return vaultURL(from: processLaunchVaultPath)
         }
         if let fromUserDefaults = nonEmptyPath(UserDefaults.standard.string(forKey: legacyInitialVaultKey)) {
-            processLaunchVaultPath = fromUserDefaults
+            launchVaultState.path = fromUserDefaults
             return vaultURL(from: fromUserDefaults)
         }
         if let env = nonEmptyPath(ProcessInfo.processInfo.environment["DREAMVAULT_VAULT"]) {
@@ -147,16 +149,29 @@ struct DreamEntry {
 
     #if DEBUG
     static func resetLaunchVaultForTesting() {
-        processLaunchVaultPath = nil
+        launchVaultState.path = nil
     }
     #endif
+}
+
+private final class LaunchVaultState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedPath: String?
+
+    var path: String? {
+        get { lock.withLock { storedPath } }
+        set { lock.withLock { storedPath = newValue } }
+    }
 }
 
 // MARK: - SwiftUI App
 
 /// AppDelegate：显式把 activation policy 设为 .regular（窗口可见在 dock/Finder）
 /// + 在 didFinishLaunching 时 activate NSApp
-final class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
+    private var fallbackWindow: NSWindow?
+
     func applicationWillFinishLaunching(_ notification: Notification) {
         // 比 applicationDidFinishLaunching 更早设置 activation policy
         NSApp.setActivationPolicy(.regular)
@@ -186,11 +201,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 直接 NSWindow 创一个 native 的 MainView 容器。
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self = self else { return }
-            let winCount = NSApp.windows.count
-            FileHandle.standardError.write(Data("[DreamVault] post-1.5s window count = \(winCount)\n".utf8))
-            if winCount == 0 {
-                self.installFallbackWindow()
-            }
+            let totalWindowCount = NSApp.windows.count
+            let visibleMainWindowCount = self.visibleMainWindowCount()
+            FileHandle.standardError.write(Data("[DreamVault] post-1.5s window count = \(totalWindowCount), visible main windows = \(visibleMainWindowCount)\n".utf8))
+            self.installFallbackWindow()
         }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -198,34 +212,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    private func installFallbackWindow() {
-        // AppModel 是 @MainActor，从 main thread 调即可
-        DispatchQueue.main.async {
-            // 居中到主屏可见区（避开 dock / menu bar）
-            let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 100, y: 100, width: 1440, height: 900)
-            let winSize = NSSize(width: 1100, height: 700)
-            let origin = NSPoint(
-                x: screenFrame.origin.x + (screenFrame.width - winSize.width) / 2,
-                y: screenFrame.origin.y + (screenFrame.height - winSize.height) / 2
-            )
-            let win = NSWindow(
-                contentRect: NSRect(origin: origin, size: winSize),
-                styleMask: [.titled, .closable, .resizable, .miniaturizable],
-                backing: .buffered, defer: false
-            )
-            win.title = "DreamVault"
-            win.isReleasedWhenClosed = false
+    private func visibleMainWindowCount() -> Int {
+        NSApp.windows.filter { window in
+            window.isVisible &&
+            !window.isMiniaturized &&
+            window.canBecomeKey &&
+            window.styleMask.contains(.titled) &&
+            window.title.localizedCaseInsensitiveContains("DreamVault")
+        }.count
+    }
 
-            // 在 NSHostingView 里塞 SwiftUI 的 MainView（共享 AppModel）
-            let model = AppModel()
-            let host = NSHostingView(rootView: MainView().environmentObject(model))
-            host.autoresizingMask = [.width, .height]
-            win.contentView = host
-            win.setContentSize(winSize)
-            win.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            FileHandle.standardError.write(Data("[DreamVault] Fallback NSWindow installed at (\(Int(origin.x)),\(Int(origin.y)))\n".utf8))
+    private func installFallbackWindow() {
+        if let fallbackWindow, fallbackWindow.isVisible {
+            fallbackWindow.makeKeyAndOrderFront(nil)
+            return
         }
+        // 居中到主屏可见区（避开 dock / menu bar）
+        let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 100, y: 100, width: 1440, height: 900)
+        let winSize = NSSize(width: 1100, height: 700)
+        let origin = NSPoint(
+            x: screenFrame.origin.x + (screenFrame.width - winSize.width) / 2,
+            y: screenFrame.origin.y + (screenFrame.height - winSize.height) / 2
+        )
+        let win = NSWindow(
+            contentRect: NSRect(origin: origin, size: winSize),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered, defer: false
+        )
+        win.title = "DreamVault"
+        win.isReleasedWhenClosed = false
+
+        // 在 NSHostingView 里塞 SwiftUI 的 MainView（共享 AppModel）
+        let model = AppModel()
+        let host = NSHostingView(rootView: MainView().environmentObject(model))
+        host.autoresizingMask = [.width, .height]
+        win.contentView = host
+        fallbackWindow = win
+        win.setContentSize(winSize)
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        FileHandle.standardError.write(Data("[DreamVault] Fallback NSWindow installed at (\(Int(origin.x)),\(Int(origin.y)))\n".utf8))
     }
 }
 
@@ -296,12 +322,16 @@ struct DreamVaultApp: App {
                     AppActions.exportDiagnostics(model: menuModel)
                 }
             }
-            // View 菜单 (P1-2 修复 GUI audit 2026-06-14: 老实现 CommandMenu("View")
-            // 新建同名菜单, 导致菜单栏出两个 "View" (系统默认一个 + 新增一个).
-            // 修法: 用 .commands(content:) modifier 追加到系统 View 菜单,
-            // 不要再 CommandMenu("View") 创建新菜单.
-            // CommandGroup(replacing: .toolbar) 之后追加, SwiftUI 自动 merge.
-            CommandGroup(after: .toolbar) {
+            // Dream 菜单
+            CommandMenu("Dream") {
+                Button("Run Dream") {
+                    _ = editorState?.flushIfDirty()
+                    Task { await menuModel.runDream() }
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(menuModel.isRunning)
+                Button("Refresh Status") { menuModel.refreshStatus() }
+                Divider()
                 Button("Source") {
                     editorState?.mode = .source
                 }
@@ -314,16 +344,6 @@ struct DreamVaultApp: App {
                     editorState?.mode = .split
                 }
                 .keyboardShortcut("3", modifiers: .command)
-            }
-            // Dream 菜单
-            CommandMenu("Dream") {
-                Button("Run Dream") {
-                    _ = editorState?.flushIfDirty()
-                    Task { await menuModel.runDream() }
-                }
-                .keyboardShortcut("r", modifiers: .command)
-                .disabled(menuModel.isRunning)
-                Button("Refresh Status") { menuModel.refreshStatus() }
                 Divider()
                 // P9 P0-4: Import 入口（菜单 + 快捷键 Cmd-I）
                 Button {

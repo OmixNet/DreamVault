@@ -72,7 +72,7 @@ public enum GraphSemanticOverlay {
         var nextId = 0
         // 收集所有候选节点: 有邻居的 + 自身 (孤立节点)
         var allNodes: Set<String> = Set(neighbors.neighbors.keys)
-        for (a, list) in neighbors.neighbors {
+        for (_, list) in neighbors.neighbors {
             for (b, _) in list { allNodes.insert(b) }
         }
         for node in allNodes {

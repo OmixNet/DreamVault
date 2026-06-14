@@ -9,7 +9,7 @@ public struct GlobalOptions {
     public var llm: String?
     public var verbose: Bool = false
 
-    public struct RuntimeContext {
+    public struct RuntimeContext: @unchecked Sendable {
         public let resolved: ResolvedDreamRuntimeConfig
         public let provider: any LLMProvider
         public let budgetManager: BudgetManager

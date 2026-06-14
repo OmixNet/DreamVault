@@ -1,61 +1,50 @@
-#!/bin/bash
-# 把 dream 二进制包成 macOS .app bundle
+#!/usr/bin/env bash
+# Build the SwiftPM GUI product into a macOS .app bundle.
 #
-# 用途：SwiftUI 外壳需要一个 .app bundle 才能用 'open' 启动（launchd 不能启动 GUI）。
-#       本脚本生成 ~/Applications/DreamVault.app（如果该目录不存在则创建）
+# Default output:
+#   ~/Applications/DreamVault.app
 #
-# 跑法：
-#   bash scripts/build-app.sh
-#   open ~/Applications/DreamVault.app           # 启动 GUI
+# Useful overrides:
+#   DREAMVAULT_APP_DIR=/path/DreamVault.app bash scripts/build-app.sh
+#   DREAMVAULT_VERSION=0.3.0 bash scripts/build-app.sh
+#   DREAMVAULT_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" bash scripts/build-app.sh
+#   DREAMVAULT_DISTRIBUTION=1 DREAMVAULT_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" bash scripts/build-app.sh
 #
-# 卸载：
-#   rm -rf ~/Applications/DreamVault.app
-#
-# 代码签名（P1-B）：
-#   如果 keychain 里有 codesign identity，脚本会问用哪个：
-#     - 自签名 cert (DreamVault Developer) → 给身边人 + 第一次 Gatekeeper 拦
-#     - Apple Developer ID (有的话) → 公证后 Gatekeeper 不拦
-#   跳过签名：DREAMVAULT_SKIP_SIGN=1 bash scripts/build-app.sh
-#   指定 identity：DREAMVAULT_SIGN_IDENTITY="<name>" bash scripts/build-app.sh
+# Signing policy:
+#   - distribution build requires a Developer ID Application identity
+#   - local build uses the requested identity, an auto-detected identity, or ad-hoc signing
+#   - DREAMVAULT_SKIP_SIGN=1 leaves the app unsigned and is only for low-level diagnosis
 
-set -e
+set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="$HOME/Applications/DreamVault.app"
+APP_DIR="${DREAMVAULT_APP_DIR:-$HOME/Applications/DreamVault.app}"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
+RESOURCES="$CONTENTS/Resources"
 SOURCE_BIN="$REPO/.build/release/dream"
-BUNDLE_VERSION="0.2.1"
+DEFAULT_VERSION="$(git -C "$REPO" describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+BUNDLE_VERSION="${DREAMVAULT_VERSION:-${DEFAULT_VERSION:-0.3.0}}"
+BUNDLE_ID="${DREAMVAULT_BUNDLE_ID:-com.OmixNet.dreamvault.gui}"
+DISTRIBUTION="${DREAMVAULT_DISTRIBUTION:-0}"
+SIGN_IDENTITY="${DREAMVAULT_SIGN_IDENTITY:-}"
 
-# —— 1. Build release ——（先）
-echo "==> [1/5] swift build -c release..."
-XCTOOL=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
-export PATH="$XCTOOL:$PATH"
-(cd "$REPO" && /usr/bin/swift build --package-path "$REPO" -c release)
-if [ ! -x "$SOURCE_BIN" ]; then
-    echo "ERROR: $SOURCE_BIN 没建出来" >&2
-    exit 1
-fi
-echo "    OK: $SOURCE_BIN"
+safe_remove_app() {
+    case "$1" in
+        ""|"/"|"$HOME"|"/Applications"|"$HOME/Applications")
+            echo "ERROR: refusing to remove unsafe app path: $1" >&2
+            exit 1
+            ;;
+        *.app) /bin/rm -rf "$1" ;;
+        *)
+            echo "ERROR: DREAMVAULT_APP_DIR must end with .app: $1" >&2
+            exit 1
+            ;;
+    esac
+}
 
-# —— 2. 建 .app 目录结构 ——
-echo "==> [2/5] Creating .app bundle at $APP_DIR..."
-mkdir -p "$HOME/Applications"
-/Users/biomatrix/.mavis/bin/mavis-trash "$APP_DIR" '2>/dev/null' || true
-mkdir -p "$MACOS"
-cp "$SOURCE_BIN" "$MACOS/DreamVault"
-chmod +x "$MACOS/DreamVault"
-
-# —— 2b. 拷 AppIcon.icns（如果存在） ——
-if [ -f "$REPO/Resources/AppIcon.icns" ]; then
-    mkdir -p "$CONTENTS/Resources"
-    cp "$REPO/Resources/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
-    echo "    AppIcon: $(ls -la "$CONTENTS/Resources/AppIcon.icns" | awk '{print $5}') bytes"
-fi
-
-# —— 3. 写 Info.plist ——
-echo "==> [3/5] Writing Info.plist..."
-cat > "$CONTENTS/Info.plist" <<EOF
+write_info_plist() {
+    cat > "$CONTENTS/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -63,7 +52,7 @@ cat > "$CONTENTS/Info.plist" <<EOF
     <key>CFBundleExecutable</key>
     <string>DreamVault</string>
     <key>CFBundleIdentifier</key>
-    <string>com.OmixNet.dreamvault.gui</string>
+    <string>${BUNDLE_ID}</string>
     <key>CFBundleName</key>
     <string>DreamVault</string>
     <key>CFBundleDisplayName</key>
@@ -86,80 +75,102 @@ cat > "$CONTENTS/Info.plist" <<EOF
     <string>NSApplication</string>
     <key>LSUIElement</key>
     <false/>
-    <!-- 禁用自动窗口状态恢复（SwiftUI WindowGroup + 我们没存状态，否则启动空窗） -->
     <key>NSSupportsAutomaticTermination</key>
     <false/>
     <key>NSQuitAlwaysKeepsWindows</key>
     <false/>
     <key>NSHumanReadableCopyright</key>
-    <string>DreamVault GUI — local-first knowledge base + nightly dream.</string>
+    <string>DreamVault GUI - local-first knowledge base and nightly dream.</string>
 </dict>
 </plist>
 EOF
+}
+
+echo "==> [1/5] swift build -c release..."
+XCTOOL=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
+export PATH="$XCTOOL:$PATH"
+export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$REPO/.build/clang-module-cache}"
+mkdir -p "$CLANG_MODULE_CACHE_PATH" "$REPO/.build/swift-module-cache"
+(cd "$REPO" && /usr/bin/swift build \
+    --package-path "$REPO" \
+    --disable-sandbox \
+    -c release \
+    -Xswiftc -module-cache-path \
+    -Xswiftc "$REPO/.build/swift-module-cache")
+if [ ! -x "$SOURCE_BIN" ]; then
+    echo "ERROR: $SOURCE_BIN was not produced" >&2
+    exit 1
+fi
+echo "    binary: $SOURCE_BIN"
+
+echo "==> [2/5] Creating .app bundle at $APP_DIR..."
+mkdir -p "$(dirname "$APP_DIR")"
+safe_remove_app "$APP_DIR"
+mkdir -p "$MACOS" "$RESOURCES"
+cp "$SOURCE_BIN" "$MACOS/DreamVault"
+chmod +x "$MACOS/DreamVault"
+
+if [ -f "$REPO/Resources/AppIcon.icns" ]; then
+    cp "$REPO/Resources/AppIcon.icns" "$RESOURCES/AppIcon.icns"
+    echo "    AppIcon: $(wc -c < "$RESOURCES/AppIcon.icns" | tr -d ' ') bytes"
+fi
+
+echo "==> [3/5] Writing Info.plist..."
+write_info_plist
 plutil -lint "$CONTENTS/Info.plist" >/dev/null
-echo "    OK"
+plutil -extract CFBundleIdentifier raw "$CONTENTS/Info.plist" >/dev/null
+echo "    bundle id: $BUNDLE_ID"
+echo "    version:   $BUNDLE_VERSION"
 
-# —— 4. Code sign（hardened runtime） ——
 echo "==> [4/5] Code signing..."
-SIGN_IDENTITY="${DREAMVAULT_SIGN_IDENTITY:-}"
-
-if [ -n "$DREAMVAULT_SKIP_SIGN" ]; then
+if [ -n "${DREAMVAULT_SKIP_SIGN:-}" ]; then
     echo "    SKIPPED (DREAMVAULT_SKIP_SIGN=1)"
-elif [ -z "$SIGN_IDENTITY" ]; then
-    # 自动发现：找 keychain 里第一个 codesign identity
-    AVAILABLE=$(security find-identity -p codesigning 2>/dev/null | grep -v "matching" | grep -v "^$" | head -3)
-    if [ -z "$AVAILABLE" ]; then
-        echo "    WARNING: keychain 里没有 codesign identity，跳过签名"
-        echo "    (运行 'bash scripts/create-self-signed-cert.sh' 生成自签名 cert)"
+else
+    if [ "$DISTRIBUTION" = "1" ]; then
+        if [ -z "$SIGN_IDENTITY" ]; then
+            echo "ERROR: DREAMVAULT_DISTRIBUTION=1 requires DREAMVAULT_SIGN_IDENTITY" >&2
+            exit 1
+        fi
+        if ! security find-identity -p codesigning -v 2>/dev/null | grep -F "$SIGN_IDENTITY" >/dev/null; then
+            echo "ERROR: signing identity not found: $SIGN_IDENTITY" >&2
+            exit 1
+        fi
+        if [[ "$SIGN_IDENTITY" != Developer\ ID\ Application:* ]]; then
+            echo "ERROR: distribution signing requires a Developer ID Application identity" >&2
+            exit 1
+        fi
+        echo "    Developer ID: $SIGN_IDENTITY"
+        codesign --force --deep --options=runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_DIR"
     else
-        FIRST=$(echo "$AVAILABLE" | head -1 | awk -F'"' '{print $2}')
-        echo "    发现 codesign identity: $FIRST"
-        if [ -t 1 ]; then
-            read -p "    用这个签名? [Y/n] " YN
-            if [ -z "$YN" ] || [ "$YN" = "y" ] || [ "$YN" = "Y" ]; then
-                SIGN_IDENTITY="$FIRST"
-            else
-                echo "    跳过签名（用 DREAMVAULT_SIGN_IDENTITY=\"<name>\" 指定别的）"
-            fi
+        if [ -z "$SIGN_IDENTITY" ]; then
+            SIGN_IDENTITY="$(security find-identity -p codesigning -v 2>/dev/null | awk -F'"' '/"/ {print $2; exit}' || true)"
+        fi
+        if [ -n "$SIGN_IDENTITY" ]; then
+            echo "    identity: $SIGN_IDENTITY"
+            codesign --force --deep --options=runtime --sign "$SIGN_IDENTITY" "$APP_DIR"
         else
-            # 非交互模式（CI/脚本调用）：直接用第一个
-            SIGN_IDENTITY="$FIRST"
+            echo "    identity: ad-hoc (-)"
+            codesign --force --deep --options=runtime --sign - "$APP_DIR"
         fi
     fi
 fi
 
-if [ -n "$SIGN_IDENTITY" ]; then
-    echo "    签名: --options=runtime --sign '$SIGN_IDENTITY' ..."
-    # --force 覆盖之前的任何 ad-hoc 签名
-    # --options=runtime 启用 hardened runtime
-    # --deep 递归签名 nested bundles（虽然我们没有）
-    codesign --force --deep --options=runtime --sign "$SIGN_IDENTITY" "$APP_DIR" 2>&1
-    echo "    验证签名:"
-    codesign -dv "$APP_DIR" 2>&1 | head -5 | sed 's/^/      /'
-    echo "    spctl 评估:"
-    spctl --assess --type execute -vv "$APP_DIR" 2>&1 | head -3 | sed 's/^/      /' || true
+echo "==> [5/5] Validating .app..."
+plutil -p "$CONTENTS/Info.plist" | head -3
+if [ -z "${DREAMVAULT_SKIP_SIGN:-}" ]; then
+    codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+    codesign -dv "$APP_DIR" 2>&1 | sed -n '1,8p' | sed 's/^/    /'
+    spctl --assess --type execute -vv "$APP_DIR" 2>&1 | sed -n '1,4p' | sed 's/^/    /' || true
 else
-    echo "    未签名（ad-hoc 启动可能 Gatekeeper 拦截）"
+    echo "    unsigned app; release-check will fail distribution mode"
 fi
 
-# —— 5. 验证 + 打印启动命令 ——
-echo "==> [5/5] 验证 .app..."
-ls -la "$MACOS/DreamVault" >/dev/null
-plutil -p "$CONTENTS/Info.plist" | head -3
 echo
-echo "==> 完成！"
+echo "==> Done"
+echo "    App: $APP_DIR"
 echo
-echo "启动 GUI："
-echo "  open -n ~/Applications/DreamVault.app"
+echo "Launch:"
+echo "  open -n \"$APP_DIR\""
 echo
-echo "或带 vault 路径："
-echo "  open -n ~/Applications/DreamVault.app --args app --vault ~/MyVault"
-echo
-echo "或开发用（自动 build + 临时 .app + verify）："
-echo "  bash scripts/build_and_run.sh --verify"
-echo
-echo "打 DMG 分发："
-echo "  bash scripts/build-dmg.sh"
-echo
-echo "卸载："
-echo "  rm -rf ~/Applications/DreamVault.app"
+echo "Build DMG:"
+echo "  DREAMVAULT_APP_DIR=\"$APP_DIR\" bash scripts/build-dmg.sh"

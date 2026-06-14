@@ -12,7 +12,7 @@ public final class VaultSearcher: ObservableObject {
     @Published public private(set) var isSearching: Bool = false
     @Published public var query: String = ""
 
-    public struct SearchResult: Identifiable, Equatable {
+    public struct SearchResult: Identifiable, Equatable, Sendable {
         public let id: String          // relPath
         public let path: URL
         public let snippet: String    // 命中行（截断到 200 字符）
@@ -38,7 +38,7 @@ public final class VaultSearcher: ObservableObject {
     }
 
     /// P2-6: ripgrep fast-path, mdfind fallback
-    private static func runSearch(query: String, vaultRoot: URL) async -> [SearchResult] {
+    nonisolated private static func runSearch(query: String, vaultRoot: URL) async -> [SearchResult] {
         // 1) ripgrep
         if let hits = RipgrepBridge.search(query: query, root: vaultRoot) {
             return hits.map { hit in
@@ -50,7 +50,7 @@ public final class VaultSearcher: ObservableObject {
         return await runMdfind(query: query, vaultRoot: vaultRoot)
     }
 
-    private static func runMdfind(query: String, vaultRoot: URL) async -> [SearchResult] {
+    nonisolated private static func runMdfind(query: String, vaultRoot: URL) async -> [SearchResult] {
         await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 let p = Process()
@@ -83,7 +83,7 @@ public final class VaultSearcher: ObservableObject {
         }
     }
 
-    private static func snippet(url: URL, query: String) -> String? {
+    nonisolated private static func snippet(url: URL, query: String) -> String? {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         let lines = content.components(separatedBy: "\n")
         // 找第一个含 query 的行（case-insensitive）
@@ -96,7 +96,7 @@ public final class VaultSearcher: ObservableObject {
         return String(content.prefix(200))
     }
 
-    private static func relPath(of url: URL, vaultRoot: URL) -> String {
+    nonisolated private static func relPath(of url: URL, vaultRoot: URL) -> String {
         let root = vaultRoot.standardizedFileURL.path
         let p = url.standardizedFileURL.path
         if p.hasPrefix(root + "/") {
