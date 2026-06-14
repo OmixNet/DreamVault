@@ -35,6 +35,16 @@ import DreamEngine
         context.coordinator.scrollView = scrollView
         context.coordinator.lastSavedText = text
         applyAttributedText(to: textView, from: text)
+        // P1 修复 (缺陷报告 §3.3 P1.1): 行号 gutter
+        // 老实现: 无行号. 笔记编辑器必备.
+        // 新实现: 装 NSTextView 自带 NSRulerView (lineNumbers), NSTextView 自动算行数
+        if let textContainer = textView.textContainer {
+            let rulerView = LineNumberRulerView(textView: textView)
+            rulerView.clientView = textView
+            scrollView.hasVerticalRuler = true
+            scrollView.verticalRulerView = rulerView
+            textContainer.widthTracksTextView = false  // 留 gutter 宽度
+        }
         return scrollView
     }
 
@@ -170,4 +180,76 @@ extension Notification.Name {
     /// 用 Notification 而非 @Binding 双向同步是因为 @Binding 在 NSViewRepresentable
     /// 里更新会触发 updateNSView，干扰 NSTextView 内部 undoManager 的 selectedRange。
     public static let nstextViewDidChange = Notification.Name("DreamVault.nstextViewDidChange")
+}
+
+// MARK: - P1 修复 (缺陷报告 §3.3 P1.1): 行号 Ruler View
+/// 简易行号 gutter, 跟 NSTextView 配合显示左侧行号.
+/// 实现: NSRulerView 子类, 监听 NSTextViewDidChangeNotification 重新画.
+/// 比 NSTextView.lineNumberRulerView 简单直接 (后者要求 NSTextViewDelegate).
+final class LineNumberRulerView: NSRulerView {
+    weak var textView: NSTextView?
+    private static let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+    private static let textColor = NSColor.tertiaryLabelColor
+
+    init(textView: NSTextView) {
+        self.textView = textView
+        super.init(scrollView: textView.enclosingScrollView, orientation: .verticalRuler)
+        self.clientView = textView
+        self.ruleThickness = 36
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(textDidChange),
+            name: NSText.didChangeNotification, object: textView
+        )
+    }
+    required init(coder: NSCoder) { fatalError("init(coder:) not supported") }
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func textDidChange(_ notification: Notification) {
+        needsDisplay = true
+    }
+
+    override func drawHashMarksAndLabels(in rect: NSRect) {
+        guard let textView = textView, let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer else { return }
+        let visibleRect = textView.visibleRect
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
+        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+
+        let text = textView.string as NSString
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: Self.font,
+            .foregroundColor: Self.textColor,
+        ]
+
+        // 行号从 1 开始, 逐 \n 计数
+        var lineNumber = 1
+        var index = 0
+        // 找到 charRange 起点的行号
+        while index < charRange.location {
+            if text.character(at: index) == 0x0A { lineNumber += 1 }
+            index += 1
+        }
+
+        // 画行号
+        var glyphIndex = charRange.location
+        while glyphIndex < charRange.location + charRange.length {
+            let lineGlyphRange = layoutManager.glyphRange(forCharacterRange: NSRange(location: glyphIndex, length: 0), actualCharacterRange: nil)
+            let lineRect = layoutManager.boundingRect(forGlyphRange: lineGlyphRange, in: textContainer)
+            let yPos = lineRect.origin.y + textView.textContainerInset.height
+            let label = "\(lineNumber)" as NSString
+            let labelSize = label.size(withAttributes: attrs)
+            let drawRect = NSRect(
+                x: ruleThickness - labelSize.width - 4,
+                y: yPos,
+                width: labelSize.width,
+                height: lineRect.height
+            )
+            label.draw(in: drawRect, withAttributes: attrs)
+            // 下一行
+            let lineCharRange = layoutManager.characterRange(forGlyphRange: lineGlyphRange, actualGlyphRange: nil)
+            if lineCharRange.length == 0 { break }
+            glyphIndex = lineCharRange.location + lineCharRange.length
+            lineNumber += 1
+        }
+    }
 }

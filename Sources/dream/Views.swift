@@ -680,6 +680,8 @@ struct DreamPanel: View {
     /// 否则 DreamCycle 读到的可能是 autosave 之前的旧文件。
     /// EditorState 在 MainView 创建共享实例；这里可选，方便不挂 editor 的场景。
     var editorState: EditorState? = nil
+    // P1 修复 (缺陷报告 §2.1): scroll target to jump from "Needs review" row to Conflicts GroupBox
+    @State private var scrollToConflicts: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -687,11 +689,19 @@ struct DreamPanel: View {
 
             Divider()
 
-            ScrollView {
-                statusBlock
-                    .padding(12)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    statusBlock
+                        .padding(12)
+                }
+                .frame(minHeight: 260)
+                .onChange(of: scrollToConflicts) { shouldScroll in
+                    if shouldScroll {
+                        withAnimation { proxy.scrollTo("conflicts-anchor", anchor: .top) }
+                        scrollToConflicts = false
+                    }
+                }
             }
-            .frame(minHeight: 260)
 
             Divider()
 
@@ -789,7 +799,24 @@ struct DreamPanel: View {
                     row("Durable", value: "\(model.status.durableCount)")
                     row("Candidate", value: "\(model.status.candidateCount)")
                     row("Archived", value: "\(model.status.archivedCount)")
-                    row("Needs review", value: "\(model.status.withContradictsCount)")
+                    // P1 严重修复 (缺陷报告 §2.1): "Needs review" 行可点击跳转矛盾 GroupBox
+                    // 之前只是只读 count, 用户看不到"待裁决"区. 现在点击跳到下面 Conflicts
+                    // GroupBox 第一个有矛盾的记忆 (ConflictResolutionView 行内裁决).
+                    if model.status.withContradictsCount > 0 {
+                        Button {
+                            withAnimation { scrollToConflicts = true }
+                        } label: {
+                            HStack {
+                                Text("Needs review")
+                                Spacer()
+                                Text("\(model.status.withContradictsCount) →")
+                                    .foregroundColor(.orange)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        row("Needs review", value: "\(model.status.withContradictsCount)")
+                    }
                 }
                 .padding(.top, 2)
             }
@@ -821,6 +848,7 @@ struct DreamPanel: View {
                     ConflictResolutionView(ledger: model.ledger)
                         .padding(.top, 2)
                 }
+                .id("conflicts-anchor")  // P1 修复 §2.1: ScrollViewReader 跳转锚点
             }
 
             // P3-C3: 5 步骤 stage 进度
