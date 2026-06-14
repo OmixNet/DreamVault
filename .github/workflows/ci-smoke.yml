@@ -1,0 +1,36 @@
+name: CI smoke
+
+# P3-8 follow-up v0.8+: CI smoke 跑 build + test + mock 100 case 评测
+# 触发: push 到 main, PR, manual dispatch
+# 跑时: ~30s (跟 scripts/ci-smoke.sh 同步)
+# **不**跑真 Ollama 量化 (那是 nightly-eval.yml 的事, 5-10min + daemon)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: Build + Test + Mock Eval
+    runs-on: macos-14  # Apple Silicon (评测假 NLEmbeddingProvider 在 Intel 上 dim=0, 走 fallback)
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app  # 跟本地 Xcode 26 兼容
+
+      - name: Run CI smoke
+        run: bash scripts/ci-smoke.sh
+
+      - name: Upload mock eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-smoke-eval-report
+          path: /tmp/dv-ci-eval.md
+          if-no-files-found: ignore
+          retention-days: 7

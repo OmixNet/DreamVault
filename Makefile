@@ -52,3 +52,13 @@ eval-ollama-contradiction:
 
 release:
 	swift build -c release
+
+# CI smoke (P3-8 follow-up v0.8+): build + test + mock 100 case, ~30s
+# 跟 GitHub Actions ci-smoke.yml 同步
+ci-smoke:
+	@bash scripts/ci-smoke.sh
+
+# Nightly 真 Ollama 量化 (P3-8 §3): 100 case, 5-10min, 需本机 daemon
+# 跟 GitHub Actions nightly-eval.yml 同步 (cron 03:00 UTC)
+nightly-eval:
+	@bash scripts/nightly-eval.sh

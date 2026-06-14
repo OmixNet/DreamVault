@@ -1,0 +1,58 @@
+name: Nightly Eval (Ollama)
+
+# P3-8 §3 真价值证明 nightly: 真 Ollama 量化 100 case
+# 触发: cron 03:00 UTC + manual dispatch
+# 跑时: 5-10 分钟 (gemma2:2b 1.6GB Apple Silicon ~5-10 tok/s)
+# 阈值: verify ≥75% / contradiction ≥80% (vs v0.7.6 baseline 88% / 92%, 留 10%+ buffer)
+
+on:
+  schedule:
+    # 每天 UTC 03:00 (= 北京时间 11:00, 用户午休时跑, 不打扰开发)
+    - cron: "0 3 * * *"
+  workflow_dispatch:  # manual trigger
+
+jobs:
+  nightly-eval:
+    name: Ollama 100 case nightly
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Install Ollama
+        run: |
+          brew install ollama
+          # 启 daemon
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          sleep 5
+          # 拉模型 (1.6GB)
+          ollama pull gemma2:2b
+
+      - name: Run nightly eval
+        env:
+          OLLAMA_BASE_URL: http://127.0.0.1:11434
+          OLLAMA_MODEL: gemma2:2b
+        run: bash scripts/nightly-eval.sh
+
+      - name: Upload eval reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-eval-reports
+          path: |
+            docs/nightly-eval/*.md
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Commit summary to repo (可选, 失败时跳过)
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/nightly-eval/summary-*.md
+          git commit -m "ci(nightly): Ollama eval summary $(date +%Y-%m-%d)" || echo "nothing to commit"
+          git push
