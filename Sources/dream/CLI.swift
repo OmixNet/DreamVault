@@ -157,8 +157,9 @@ struct DreamCLI {
             let candidates = files.filter { f in
                 let rel = "raw/\(f.lastPathComponent)"
                 if processed.contains(rel) { return false }
-                guard let content = try? String(contentsOf: f, encoding: .utf8) else { return false }
-                return content.contains("processed: false")
+                // P0 致命修复 (缺陷报告 §1.3): 用 FrontmatterScanner 流式扫, 避免 String(contentsOf:) 全文读到内存
+                // 5MB 笔记 UI 假死. 老实现 O(file size) → 新实现 O(frontmatter 行数)
+                return FrontmatterScanner.hasProcessedFalse(f)
             }
             print("raw/ 候选（未处理）: \(candidates.count)")
         } else {
