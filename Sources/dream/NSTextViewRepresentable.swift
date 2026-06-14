@@ -71,12 +71,33 @@ import DreamEngine
     }
 
     /// P2-3: Source 模式也走 attributed string — 标 wikilink (蓝色 + 下划线 + .link)
+    /// P1 修复 (缺陷报告 §3.3 P1.2): 叠加 Markdown 语法高亮 (标题 / 粗体 / 行内代码 / 链接)
     private func applyAttributedText(to textView: NSTextView, from text: String) {
         var baseAttrs: [NSAttributedString.Key: Any] = [:]
         baseAttrs[.font] = textView.font
         baseAttrs[.foregroundColor] = textView.textColor ?? .labelColor
+        // 1) WikiLinkExtractor 先标 wikilink (.link attribute + 蓝色)
         let attributed = WikiLinkExtractor.attributedString(from: text, baseAttrs: baseAttrs)
-        textView.textStorage?.setAttributedString(attributed)
+        // 2) 收集 wikilink 范围 (跳过 MarkdownHighlighter 的链接匹配, 避免双重着色)
+        var wikilinkRanges: [NSRange] = []
+        attributed.enumerateAttribute(.link, in: NSRange(location: 0, length: attributed.length)) { value, range, _ in
+            if value != nil {
+                wikilinkRanges.append(range)
+            }
+        }
+        // 3) MarkdownHighlighter 叠加 4 类高亮
+        let baseFont = textView.font ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let highlighted = MarkdownHighlighter.highlighted(
+            text,
+            baseFont: baseFont,
+            baseColor: textView.textColor ?? .labelColor,
+            skipRanges: wikilinkRanges
+        )
+        // 4) 合并 wikilink attribute 到 highlighted 上 (避免丢失 .link)
+        for range in wikilinkRanges {
+            highlighted.addAttribute(.link, value: attributed.attribute(.link, at: range.location, effectiveRange: nil) ?? URL(string: "dreamvault://")!, range: range)
+        }
+        textView.textStorage?.setAttributedString(highlighted)
     }
 
     public func makeCoordinator() -> Coordinator { Coordinator() }
