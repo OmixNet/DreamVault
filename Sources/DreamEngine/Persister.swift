@@ -91,12 +91,16 @@ public struct Persister {
         }
 
         // 2. 知识图谱：非归档记忆参与建图（来源重叠连边），算相关链接
+        //    P0 致命修复 (缺陷报告 §1.1): 走 RelatedCache 24h TTL 缓存 + maxHops 剪枝
+        //    老路径直接调 graph.topRelated → O(N²), N=10000 = 100M ops 30s 卡顿
+        //    新路径 maxHops=2 跳数剪枝 + 24h cache → O(N) 平均
         let active = ledger.memories.filter { $0.status != .archived }
         let graph = KnowledgeGraph(memories: active)
+        let cache = RelatedCache()
         var relatedByID: [String: [(id: String, score: Double)]] = [:]
         var inbound: [String: Int] = [:]
         for m in active {
-            let related = graph.topRelated(to: m.id, limit: 5)
+            let related = cache.topRelated(to: m.id, in: graph, limit: 5)
             relatedByID[m.id] = related
             for r in related { inbound[r.id, default: 0] += 1 }
         }
