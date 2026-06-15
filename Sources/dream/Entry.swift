@@ -27,11 +27,11 @@ struct DreamEntry {
         "app",          // 显式启动 GUI
     ]
     /// 从 Finder / Spotlight / open / 双击 .app 启动时 argv 通常是 [Contents/MacOS/dream]，
-    /// firstArg 为 nil。判断"非用户主动传参"的标准：firstArg == nil 或 firstArg 以 "-" 开头（flag）。
-    /// SwiftUI App.main() 自身会把 bundle argv 转成 SDK argv 列表，所以这部分我们不接管。
+    /// firstArg 为 nil；LaunchServices 也可能在用户参数前注入 `-psn_...`。
+    /// 只把 `-psn_` 视作系统启动噪声；普通 CLI flag（如 `--help`）仍交给 CLI。
     private static func looksLikeNoArgument(_ firstArg: String?) -> Bool {
-        // nil = 没人传参（双击 / Finder / open）；或者 firstArg 以 - 开头（看起来像 GUI 自己带的 flag）
-        return firstArg == nil
+        guard let firstArg else { return true }
+        return firstArg.hasPrefix("-psn_")
     }
     private static let legacyInitialVaultKey = "DreamVaultInitialVault"
     private static let launchVaultState = LaunchVaultState()
@@ -76,10 +76,14 @@ struct DreamEntry {
             launchVaultState.path = vault
             UserDefaults.standard.set(vault, forKey: legacyInitialVaultKey)
         }
-        UserDefaults.standard.set(false, forKey: "ApplePersistenceIgnoreState")
+        configureWindowRestorationForLaunch()
+        DreamVaultApp.main()
+    }
+
+    static func configureWindowRestorationForLaunch() {
+        UserDefaults.standard.set(true, forKey: "ApplePersistenceIgnoreState")
         UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
         UserDefaults.standard.synchronize()
-        DreamVaultApp.main()
     }
 
     /// CLI 路径：DreamCLI.main() 是 async，起 Task 跑，进程挂起等结果
@@ -178,9 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         // 禁掉窗口状态恢复 —— SwiftUI 的 WindowGroup 没法 satisfy restore
         // (system default + bundle 没保存 state)，否则启动会卡在
         // "Restoring windows" 出现 0 窗。这是已知 macOS 13 SwiftUI 行为。
-        UserDefaults.standard.set(false, forKey: "ApplePersistenceIgnoreState")
-        UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
-        UserDefaults.standard.synchronize()
+        DreamEntry.configureWindowRestorationForLaunch()
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate(ignoringOtherApps: true)

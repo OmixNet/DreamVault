@@ -71,6 +71,22 @@ if [ "$KEEP" = "1" ]; then
 else
     TMP_APP="$HOME/Applications/DreamVault-dev.app"
 fi
+EXISTING_BIN="$TMP_APP/Contents/MacOS/DreamVault"
+if [ -x "$EXISTING_BIN" ]; then
+    EXISTING_PIDS=$(pgrep -f "$EXISTING_BIN" 2>/dev/null || true)
+    if [ -n "$EXISTING_PIDS" ]; then
+        echo "==> 停止旧 dev 进程: $EXISTING_PIDS"
+        for pid in $EXISTING_PIDS; do
+            kill "$pid" 2>/dev/null || true
+        done
+        sleep 1
+        for pid in $EXISTING_PIDS; do
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -9 "$pid" 2>/dev/null || true
+            fi
+        done
+    fi
+fi
 if [ -e "$TMP_APP" ]; then
     rm -rf "$TMP_APP"
 fi
@@ -201,19 +217,10 @@ if [ "$VERIFY" = "1" ]; then
         echo "    ✓ 进程参数含 --vault"
     fi
 
-    # 2) AX GUI window：确认真的有可见 DreamVault 窗口，而不是只有进程
-    AX_PROCESS_NAME=""
-    AX_WINDOW_COUNT=""
-    for name in "DreamVault" "DreamVault (dev)" "DreamVault-dev"; do
-        count=$(/usr/bin/osascript -e "tell application \"System Events\" to tell process \"$name\" to count of windows" 2>/dev/null || true)
-        if [[ "$count" =~ ^[0-9]+$ ]]; then
-            AX_PROCESS_NAME="$name"
-            AX_WINDOW_COUNT="$count"
-            break
-        fi
-    done
+    # 2) AX GUI window：确认当前 dev PID 真的有可见窗口，而不是误抓已打开的正式版 DreamVault。
+    AX_WINDOW_COUNT=$(/usr/bin/osascript -e "tell application \"System Events\" to tell first process whose unix id is $PID to count of windows" 2>/dev/null || true)
     if [[ "$AX_WINDOW_COUNT" =~ ^[0-9]+$ ]] && [ "$AX_WINDOW_COUNT" -gt 0 ]; then
-        echo "    ✓ AX GUI window visible ($AX_WINDOW_COUNT via $AX_PROCESS_NAME)"
+        echo "    ✓ AX GUI window visible ($AX_WINDOW_COUNT via PID $PID)"
     else
         echo "    ✗ AX GUI window 不可见或不可读取（count=${AX_WINDOW_COUNT:-unavailable}）"
         FAIL=1

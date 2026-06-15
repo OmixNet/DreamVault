@@ -36,6 +36,7 @@ import DreamEngine
         context.coordinator.textView = textView
         context.coordinator.scrollView = scrollView
         context.coordinator.lastSavedText = text
+        context.coordinator.lastSeenExternalText = text
         applyAttributedText(to: textView, from: text)
         configureAccessibility(scrollView: scrollView, textView: textView)
         requestFocusIfNeeded(textView, coordinator: context.coordinator)
@@ -55,8 +56,10 @@ import DreamEngine
     public func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
 
-        // 只在外部真的改了 text（切文件/loadContent）才重设 string —— 避免撤销用户输入
-        if text != context.coordinator.lastSeenExternalText {
+        // 只在外部真的改了 text（切文件/loadContent）才重设 string。
+        // 用户输入会先改变 NSTextView，再同步到 SwiftUI buffer；这种“回声更新”
+        // 不能重刷 textStorage，否则会干扰 dirty/autosave 与 undo/selection。
+        if textView.string != text {
             let savedSelection = textView.selectedRange
             let savedScroll = scrollView.contentView.bounds.origin
             applyAttributedText(to: textView, from: text)
@@ -204,17 +207,16 @@ import DreamEngine
             return true
         }
 
-        public func textViewDidChange(_ notification: Notification) {
+        public func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             let newText = textView.string
-            // 通过 NotificationCenter 把新文本传给 SwiftUI 端
+            // 通过 NotificationCenter 把新文本传给 SwiftUI 端。
+            // dirty/autosave 由 EditorState 根据 buffer 与 lastSavedSnapshot 统一判断；
+            // AppKit bridge 只负责传递文本，不能再维护第二套保存状态。
             NotificationCenter.default.post(
                 name: .nstextViewDidChange, object: nil,
                 userInfo: ["text": newText]
             )
-            // 脏检查
-            let isDirty = (newText != lastSavedText)
-            onDirtyChange?(isDirty)
         }
 
         // P2-A2: NSTextView 点 .link attribute 触发。dreamvault:// 拦截处理；

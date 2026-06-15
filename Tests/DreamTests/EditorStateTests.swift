@@ -157,6 +157,45 @@ final class EditorStateTests: XCTestCase {
         XCTAssertEqual(readBack, "explicit save")
     }
 
+    func testTextViewBridge_doesNotComputeDirtyStatus() {
+        let coordinator = NSTextViewRepresentable.Coordinator()
+        let textView = NSTextView()
+        textView.string = "user typed"
+
+        var dirtyCallbacks = 0
+        coordinator.onDirtyChange = { _ in dirtyCallbacks += 1 }
+
+        coordinator.textDidChange(
+            Notification(name: NSText.didChangeNotification, object: textView)
+        )
+
+        XCTAssertEqual(dirtyCallbacks, 0,
+                       "NSTextView bridge must not override EditorState dirty tracking")
+    }
+
+    func testTextViewBridge_postsTextChangeNotification() {
+        let coordinator = NSTextViewRepresentable.Coordinator()
+        let textView = NSTextView()
+        textView.string = "user typed via NSTextView"
+
+        let exp = expectation(description: "text changed notification")
+        var observedText: String?
+        let token = NotificationCenter.default.addObserver(
+            forName: .nstextViewDidChange, object: nil, queue: .main
+        ) { note in
+            observedText = note.userInfo?["text"] as? String
+            exp.fulfill()
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        coordinator.textDidChange(
+            Notification(name: NSText.didChangeNotification, object: textView)
+        )
+
+        wait(for: [exp], timeout: 1.0)
+        XCTAssertEqual(observedText, "user typed via NSTextView")
+    }
+
     // MARK: - 模式 + raw 强制只读
 
     func testRaw_isAlwaysReadOnly() {

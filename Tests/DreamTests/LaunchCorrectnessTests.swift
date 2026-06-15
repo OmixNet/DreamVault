@@ -170,6 +170,15 @@ final class LaunchCorrectnessTests: XCTestCase {
         XCTAssertFalse(DreamEntry.isCLIRoute("app"), "'app' 应该进 GUI")
     }
 
+    func testRoute_launchServicesProcessSerialNumber_goesGUI() {
+        // `open -n DreamVault.app --args ...` 可能在用户参数前注入 -psn_...
+        XCTAssertFalse(DreamEntry.isCLIRoute("-psn_0_123456"), "LaunchServices 的 -psn_ 参数应视作 GUI 启动")
+    }
+
+    func testRoute_regularFlag_goesCLI() {
+        XCTAssertTrue(DreamEntry.isCLIRoute("--help"), "普通 CLI flag 仍应交给 CLI 处理，不能泛化成所有 '-' 都进 GUI")
+    }
+
     func testRoute_knownSubcommand_goesCLI() {
         let known: Set<String> = ["run", "rollback", "status", "report", "help", "version"]
         for sub in known {
@@ -183,6 +192,26 @@ final class LaunchCorrectnessTests: XCTestCase {
             XCTAssertTrue(DreamEntry.isCLIRoute(bad),
                           "未知子命令 '\(bad)' 应该进 CLI 走 default 报错，不再启 GUI")
         }
+    }
+
+    func testLaunchDisablesWindowStateRestoration() {
+        let oldIgnoreState = UserDefaults.standard.object(forKey: "ApplePersistenceIgnoreState")
+        let oldKeepsWindows = UserDefaults.standard.object(forKey: "NSQuitAlwaysKeepsWindows")
+        defer {
+            restoreUserDefault(oldIgnoreState, forKey: "ApplePersistenceIgnoreState")
+            restoreUserDefault(oldKeepsWindows, forKey: "NSQuitAlwaysKeepsWindows")
+        }
+
+        DreamEntry.configureWindowRestorationForLaunch()
+
+        XCTAssertTrue(
+            UserDefaults.standard.bool(forKey: "ApplePersistenceIgnoreState"),
+            "禁用窗口状态恢复时 ApplePersistenceIgnoreState 必须为 true，否则 open 启动可能恢复到 0 窗口状态"
+        )
+        XCTAssertFalse(
+            UserDefaults.standard.bool(forKey: "NSQuitAlwaysKeepsWindows"),
+            "关闭最后窗口后不应保留窗口恢复状态"
+        )
     }
 
     // MARK: - GUI verify script
@@ -199,6 +228,10 @@ final class LaunchCorrectnessTests: XCTestCase {
         XCTAssertTrue(
             script.contains("FAIL=1"),
             "GUI window 缺失时 verify 必须失败"
+        )
+        XCTAssertTrue(
+            script.contains("first process whose unix id is $PID"),
+            "--verify 的 AX window 检查必须绑定当前 dev PID，不能误把已打开的正式版 DreamVault 窗口当作通过"
         )
     }
 
@@ -230,7 +263,30 @@ final class LaunchCorrectnessTests: XCTestCase {
         )
     }
 
+    func testBuildAndRunStopsExistingDevAppBeforeRebuild() throws {
+        let scriptURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("scripts/build_and_run.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        XCTAssertTrue(
+            script.contains("EXISTING_BIN=\"$TMP_APP/Contents/MacOS/DreamVault\""),
+            "重建稳定 dev app 前必须定位旧 dev binary，避免覆盖仍在运行的 .app"
+        )
+        XCTAssertTrue(
+            script.contains("pgrep -f \"$EXISTING_BIN\""),
+            "启动新 dev 前必须停止旧 dev 进程，否则 --verify 可能抓到旧 PID"
+        )
+    }
+
     // MARK: - helper
+
+    private func restoreUserDefault(_ oldValue: Any?, forKey key: String) {
+        if let oldValue {
+            UserDefaults.standard.set(oldValue, forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
 
     private func makeTmpVault() -> URL {
         let dir = FileManager.default.temporaryDirectory
