@@ -26,7 +26,10 @@ public final class RelatedCache: @unchecked Sendable {
         }
     }
 
-    private let lock = NSLock()
+    // P1-1 修复 (v0.14, 2026-06-15): NSLock 改 os_unfair_lock. 性能更好, Swift 6
+    // strict-concurrency 不警告. 同步 API 不动 (topRelated/rebuild/clear/stats
+    // 全是 sync, 不能改 actor — API 签名兼容比 Swift 6 idiom 重要).
+    private var lock = os_unfair_lock_s()
     private var cache: [String: [(id: String, score: Double)]] = [:]
     private var lastBuild: Date = .distantPast
     private let config: Config
@@ -39,15 +42,15 @@ public final class RelatedCache: @unchecked Sendable {
     /// - 第一次调用某 node 触发全图 rebuild (cohort, 一次性成本).
     /// - 后续 24h 内直接查表.
     public func topRelated(to id: String, in graph: KnowledgeGraph, limit: Int = 5) -> [(id: String, score: Double)] {
-        lock.lock()
+        os_unfair_lock_lock(&lock)
         let stale = Date().timeIntervalSince(lastBuild) >= config.ttl || cache.isEmpty
-        lock.unlock()
+        os_unfair_lock_unlock(&lock)
         if stale {
             rebuild(from: graph)
         }
-        lock.lock()
+        os_unfair_lock_lock(&lock)
         let all = cache[id] ?? []
-        lock.unlock()
+        os_unfair_lock_unlock(&lock)
         if all.count > limit {
             return Array(all.prefix(limit))
         }
@@ -61,24 +64,24 @@ public final class RelatedCache: @unchecked Sendable {
         for node in graph.nodes {
             new[node] = graph.topRelated(to: node, limit: 5, maxHops: config.maxHops)
         }
-        lock.lock()
+        os_unfair_lock_lock(&lock)
         cache = new
         lastBuild = Date()
-        lock.unlock()
+        os_unfair_lock_unlock(&lock)
     }
 
     /// 清缓存 (graph 重大变更后调用, e.g. Persister 持久化新节点).
     public func clear() {
-        lock.lock()
+        os_unfair_lock_lock(&lock)
         cache.removeAll()
         lastBuild = .distantPast
-        lock.unlock()
+        os_unfair_lock_unlock(&lock)
     }
 
     /// 测试/调试: 缓存统计
     public func stats() -> (nodes: Int, lastBuild: Date, ageSeconds: Double) {
-        lock.lock()
-        defer { lock.unlock() }
+        os_unfair_lock_lock(&lock)
+        defer { os_unfair_lock_unlock(&lock) }
         return (cache.count, lastBuild, Date().timeIntervalSince(lastBuild))
     }
 }

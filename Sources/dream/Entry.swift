@@ -88,13 +88,22 @@ struct DreamEntry {
 
     /// CLI 路径：DreamCLI.main() 是 async，起 Task 跑，进程挂起等结果
     private static func launchCLI() {
-        let sema = DispatchSemaphore(value: 0)
+        // P0-4 修复 (v0.14 e2e 验证发现, 2026-06-15): 老实现用 DispatchSemaphore
+        // 死等, 但 Task.detached 走 Foundation.exit() 终止进程 (不发 signal).
+        // 老设计前提: Foundation.exit() 终止进程, sema.wait() 永远不返, 但进程已死.
+        // 实际: Foundation.exit() 之前还有些 work 没走完, sema.wait() 真卡住
+        // (process sample 显示 _dispatch_semaphore_wait_slow). 触发场景: 任何走
+        // 手动 CLI 路径 e2e 测 (P0-4 durable loop 脚本). 跟 launchd 路径 (dream-runner.sh
+        // sleep 等子进程退出) 不冲突, launchd 仍能跑成.
+        //
+        // 修法: 用 dispatchMain() 等 Task 调 exit 走完. dispatchMain() 实际是 RunLoop,
+        // Foundation.exit() 终止进程, main thread 自然结束. 跟 GUI 路径 (NSApp.run())
+        // 同模式.
         Task.detached {
             let code = await DreamCLI.main()
             Foundation.exit(code)
         }
-        // 死等 —— DreamCLI.main() 内部调 Foundation.exit() 终止进程
-        sema.wait()
+        dispatchMain()
     }
 
     /// 从 argv 解析 --vault <path> 或 --vault=<path>。命中返回绝对 URL，否则 nil。

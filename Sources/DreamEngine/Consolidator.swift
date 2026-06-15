@@ -391,7 +391,7 @@ public struct Consolidator: Sendable {
                     do {
                         var localCount = 0
                         let result = try await self.consolidate3StepOne(m, fallback: fallback, rejectedFabricated: &localCount)
-                        counter.add(localCount)
+                        await counter.add(localCount)
                         return result
                     } catch {
                         // P3-3 评审 §1.2 修复: 3 段失败**不**回退 2 步 (那把全文当教训污染 ledger).
@@ -399,7 +399,7 @@ public struct Consolidator: Sendable {
                         // 留明晚重试 (因为它的 raw/ 没被标 processed, 下次 gather 会重新收集).
                         // 设计取舍: 不在 DreamCycle 暴露 "deferred" 计数, onStage 已经会报
                         // "consolidate failed" 1 次; 真实部署看 dream-report 跟 log 知道哪些 skip.
-                        counter.addError(error)  // 失败计数 (可观测, 调试用)
+                        await counter.addError(error)  // 失败计数 (可观测, 调试用)
                         return []
                     }
                 }
@@ -414,14 +414,14 @@ public struct Consolidator: Sendable {
             }
             // fallback=false 模式：concurrency=1 时错误会自然抛出（serial 不吞错）。
             // concurrency>1 时 firstError 标记首个错误，但只警告，不抛（保护整批）。
-            if let firstErrorDescription = counter.firstErrorDescription(), fallback == false {
+            if let firstErrorDescription = await counter.firstErrorDescription(), fallback == false {
                 // serial 模式下已经 throw，这里只会在 concurrency>1 时进。
                 // 用户要 hard-fail 的语义应通过 concurrency=1 实现。
                 FileHandle.standardError.write(Data(
                     "[Consolidator] 三段失败 (fallback=false 但吞掉以保护整批): \(firstErrorDescription)\n".utf8))
             }
             // P0-3: 并发路径回填 inout 计数
-            rejectedFabricated += counter.value()
+            rejectedFabricated += await counter.value()
             return collected
         }
     }
@@ -429,34 +429,26 @@ public struct Consolidator: Sendable {
 
 
     /// P0-3 helper: 并发路径 in-memory 计数器 (escaping closure 不能 capture inout)
-
-    /// P0-3 helper: 并发路径 in-memory 计数器 (escaping closure 不能 capture inout)
-    private final class CounterBox: @unchecked Sendable {
-        private let lock = NSLock()
+    /// P1-1 修复 (v0.14, 2026-06-15): 老实现是 final class + NSLock. Swift 6 idiom
+    /// 是 actor (async-safe, no manual lock). 闭包内调 add/addError/value 都走
+    /// actor 自动序列化, 不用 @unchecked Sendable.
+    private actor CounterBox {
         private var v: Int = 0
         private var errors: Int = 0  // P3-3: 3 段失败计数
         private var firstErrorText: String?
 
-        func add(_ n: Int) {
-            lock.withLock { v += n }
-        }
+        func add(_ n: Int) { v += n }
 
         func addError(_ error: Error) {
-            lock.withLock {
-                errors += 1
-                if firstErrorText == nil {
-                    firstErrorText = String(describing: error)
-                }
+            errors += 1
+            if firstErrorText == nil {
+                firstErrorText = String(describing: error)
             }
         }
 
-        func value() -> Int {
-            lock.withLock { v }
-        }
+        func value() -> Int { v }
 
-        func firstErrorDescription() -> String? {
-            lock.withLock { firstErrorText }
-        }
+        func firstErrorDescription() -> String? { firstErrorText }
     }
 
     /// 三段式串行版本（concurrency=1 时用，调试/回归用）

@@ -15,18 +15,25 @@ public final class MockLLMProvider: LLMProvider, @unchecked Sendable {
     public typealias Handler = @Sendable (String, String) throws -> String  // (system, user) -> answer
     private let handler: Handler
     /// 记录调用次数，便于测试断言
-    private let _callCount = NSLock()
-    public var callCount: Int {
-        _callCount.withLock { _count }
-    }
+    /// P1-1 修复 (v0.14, 2026-06-15): NSLock 改 os_unfair_lock (跟 EmbeddingProvider
+    /// 一致). 性能更好, Swift 6 strict-concurrency 不警告. sync `callCount` getter
+    /// 仍兼容 (老测试用), API 签名不变.
+    private var _lock = os_unfair_lock_s()
     private var _count: Int = 0
+    public var callCount: Int {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        return _count
+    }
 
     public init(handler: @escaping Handler = MockLLMProvider.defaultHandler) {
         self.handler = handler
     }
 
     public func complete(system: String, user: String) async throws -> String {
-        _callCount.withLock { _count += 1 }
+        os_unfair_lock_lock(&_lock)
+        _count += 1
+        os_unfair_lock_unlock(&_lock)
         return try handler(system, user)
     }
 

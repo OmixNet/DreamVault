@@ -97,7 +97,11 @@ public struct NLEmbeddingProvider: EmbeddingProvider, @unchecked Sendable {
 public final class CachedEmbeddingProvider: EmbeddingProvider, @unchecked Sendable {
     private let inner: EmbeddingProvider
     private var cache: [String: [Double]?] = [:]
-    private let lock = NSLock()
+    // P1-1 修复 (v0.14, 2026-06-15): NSLock 改 os_unfair_lock. 性能更好 (Apple
+    // 推荐, Foundation 自 iOS 10 / macOS 10.12 走), Swift 6 strict-concurrency
+    // 不警告. 注意: os_unfair_lock 是值类型, 必须用 ManagedBuffer / 类属性
+    // 才能保证 lock state 不被 copy. 这里用 class 自身做 owner.
+    private var lock = os_unfair_lock_s()
 
     public var dimension: Int { inner.dimension }
 
@@ -107,25 +111,25 @@ public final class CachedEmbeddingProvider: EmbeddingProvider, @unchecked Sendab
 
     public func embed(_ text: String) -> [Double]? {
         let key = text
-        lock.lock()
+        os_unfair_lock_lock(&lock)
         if let cached = cache[key] {
-            lock.unlock()
+            os_unfair_lock_unlock(&lock)
             return cached
         }
-        lock.unlock()
+        os_unfair_lock_unlock(&lock)
         // cache miss: 调 inner, 存结果
         let result = inner.embed(text)
-        lock.lock()
+        os_unfair_lock_lock(&lock)
         cache[key] = result
-        lock.unlock()
+        os_unfair_lock_unlock(&lock)
         return result
     }
 
     /// 清空缓存 (e.g. test 间重置)
     public func clearCache() {
-        lock.lock()
+        os_unfair_lock_lock(&lock)
         cache.removeAll()
-        lock.unlock()
+        os_unfair_lock_unlock(&lock)
     }
 }
 
