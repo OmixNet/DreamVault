@@ -2,7 +2,7 @@
 
 macOS 原生 Markdown 知识库 + dream 夜间记忆整理。本仓库包含 **内核**（DreamEngine 库 + 端到端测试 + 文档）、**dream CLI**、**dream SwiftUI GUI** 和 **launchd 夜间调度**。
 
-**当前开发快照**：严格测试门禁 `687 tests, 7 skipped, 0 failures`；发布包版本通过 `DREAMVAULT_VERSION` 指定。
+**当前开发快照**：严格测试门禁 `693 tests, 0 skipped, 0 failures`；发布包版本通过 `DREAMVAULT_VERSION` 指定。
 
 ## 跑起来
 
@@ -22,7 +22,7 @@ env CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-module-cache" \
   -Xswiftc -strict-concurrency=complete
 ```
 
-当前验证结果：**687 tests, 7 skipped, 0 failures**。skip 来自当前机器缺少 NaturalLanguage embedding 系统模型和 Keychain 沙盒限制。
+当前验证结果：**693 tests, 0 skipped, 0 failures**。v0.13.0 收尾后实际跑 `swift test` 拿真实数, 0 skip。
 
 > **环境提示**：本机若 `swift` driver spawn 子命令失败（找不到 `swift-test` 等），需把 Xcode toolchain 加进 PATH。
 > 这是因为 `/usr/bin/swift`（Apple CLT）只是个 multi-call driver，真正的 `swift-test` / `swift-build` 在 Xcode toolchain 里。
