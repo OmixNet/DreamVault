@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - MockLLMProvider（测试与本地开发用）
 //
@@ -15,15 +16,16 @@ public final class MockLLMProvider: LLMProvider, @unchecked Sendable {
     public typealias Handler = @Sendable (String, String) throws -> String  // (system, user) -> answer
     private let handler: Handler
     /// 记录调用次数，便于测试断言
-    /// P1-1 修复 (v0.14, 2026-06-15): NSLock 改 os_unfair_lock (跟 EmbeddingProvider
-    /// 一致). 性能更好, Swift 6 strict-concurrency 不警告. sync `callCount` getter
-    /// 仍兼容 (老测试用), API 签名不变.
-    private var _lock = os_unfair_lock_s()
-    private var _count: Int = 0
+    /// P1-1 v0.14.1 修复 (PM 2026-06-16 验收整改): v0.14 改 NSLock → os_unfair_lock,
+    /// Swift 6 language mode 仍报 'unavailable from asynchronous contexts'.
+    /// 修法: OSAllocatedUnfairLock<State> Swift 5.10+ idiomatic, sync API 仍兼容
+    /// (test 立刻读 callCount, 老测试不用 await), async complete 走 performWhileLocked.
+    /// 选 OSAllocatedUnfairLock 而不是 actor 是因为 callCount sync getter 跨测试
+    /// 调用, actor 化要 await, 改 API 签名破坏老测试.
+    private struct State { var count: Int = 0 }
+    private let counter = OSAllocatedUnfairLock<State>(initialState: State())
     public var callCount: Int {
-        os_unfair_lock_lock(&_lock)
-        defer { os_unfair_lock_unlock(&_lock) }
-        return _count
+        counter.withLock { $0.count }
     }
 
     public init(handler: @escaping Handler = MockLLMProvider.defaultHandler) {
@@ -31,9 +33,9 @@ public final class MockLLMProvider: LLMProvider, @unchecked Sendable {
     }
 
     public func complete(system: String, user: String) async throws -> String {
-        os_unfair_lock_lock(&_lock)
-        _count += 1
-        os_unfair_lock_unlock(&_lock)
+        await counter.withLock { state in
+            state.count += 1
+        }
         return try handler(system, user)
     }
 

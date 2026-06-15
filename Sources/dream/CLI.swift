@@ -54,7 +54,21 @@ struct DreamCLI {
             printHelp()
             return 0
         case "version", "--version", "-V":
-            print("dream 0.1.0 (DreamEngine 内核)")
+            // P2-3 v0.14.1 修复 (PM 2026-06-16 验收整改): 老写死 "0.1.0" 跟 app bundle
+            // / git tag 走不同源, 跟测试 + 排错带来混乱. 修法: 优先 DREAMVAULT_VERSION
+            // env (build-app.sh 已设), 退到 git describe --tags, 最后 "dev".
+            let envVer = ProcessInfo.processInfo.environment["DREAMVAULT_VERSION"]
+            if let envVer, !envVer.isEmpty {
+                print("dream \(envVer) (DreamEngine 内核)")
+                return 0
+            }
+            // git describe --tags --match 'v[0-9]*' --abbrev=0
+            let gitDesc = Self.gitDescribeVersion()
+            if let gitDesc {
+                print("dream \(gitDesc) (DreamEngine 内核, git describe)")
+                return 0
+            }
+            print("dream dev (DreamEngine 内核, no git tag)")
             return 0
         default:
             FileHandle.standardError.write(Data("dream: 未知子命令 '\(sub)'\n".utf8))
@@ -292,6 +306,29 @@ struct DreamCLI {
     }
 
     // MARK: - help
+
+    /// v0.14.1: 走 git describe --tags --match 'v[0-9]*' --abbrev=0 拿最近 tag.
+    /// 失败返 nil (e.g. 离线 build, 不在 git 仓库里, .git/ 损坏).
+    /// 不抛错, 静默返 nil, 让 caller 走 "dev" fallback.
+    static func gitDescribeVersion() -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = ["git", "-C", Bundle.main.bundlePath == "" ? "." : URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().deletingLastPathComponent().path, "describe", "--tags", "--match", "v[0-9]*", "--abbrev=0"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()  // 静默吞 stderr
+        do {
+            try p.run()
+            p.waitUntilExit()
+            guard p.terminationStatus == 0 else { return nil }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let s = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return s
+        } catch {
+            return nil
+        }
+    }
 
     static func printHelp() {
         let help = """
