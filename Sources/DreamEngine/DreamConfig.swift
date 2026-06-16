@@ -68,6 +68,21 @@ public struct VaultConfig: Codable, Sendable, Equatable {
         public var archiveSalienceThreshold: Double
         public var archiveStaleDays: Double
 
+        // MARK: - ADR-0003 新增字段（5 项加权 salience + 6 态阈值）
+
+        /// sourceSupport 权重：被多少独立 raw/notes 源支撑
+        /// 默认 0.10（ADR-0003 §决策：保守 under-archive 倾向）
+        public var wSource: Double
+        /// userReinforcement 权重：用户显式 keep/pin/confirm
+        /// 默认 0.10（ADR-0003 §决策：保守 under-archive 倾向）
+        public var wUser: Double
+        /// reinforced → durable 的回归时间常数（天）。过了这么久没强化就回 durable。
+        /// 默认 14 天。
+        public var reinforcedDecayDays: Double
+        /// durable → decayed 的 salience 阈值。低于此值进入 decayed 中间态。
+        /// 默认 0.30（高于 archiveSalienceThreshold，给中间态留可观测区）。
+        public var decayedSalienceThreshold: Double
+
         public init(wRecency: Double = 0.5,
                     wFrequency: Double = 0.3,
                     wLinkage: Double = 0.2,
@@ -75,7 +90,11 @@ public struct VaultConfig: Codable, Sendable, Equatable {
                     kFrequency: Double = 5,
                     lLinkage: Double = 8,
                     archiveSalienceThreshold: Double = 0.15,
-                    archiveStaleDays: Double = 90) {
+                    archiveStaleDays: Double = 90,
+                    wSource: Double = 0.10,
+                    wUser: Double = 0.10,
+                    reinforcedDecayDays: Double = 14,
+                    decayedSalienceThreshold: Double = 0.30) {
             self.wRecency = wRecency
             self.wFrequency = wFrequency
             self.wLinkage = wLinkage
@@ -84,9 +103,16 @@ public struct VaultConfig: Codable, Sendable, Equatable {
             self.lLinkage = lLinkage
             self.archiveSalienceThreshold = archiveSalienceThreshold
             self.archiveStaleDays = archiveStaleDays
+            self.wSource = wSource
+            self.wUser = wUser
+            self.reinforcedDecayDays = reinforcedDecayDays
+            self.decayedSalienceThreshold = decayedSalienceThreshold
         }
 
         /// 转成 Decayer 用的内部 DecayConfig
+        /// ADR-0003 §Backward compatibility: 老 config 文件没有 wSource/wUser/
+        /// reinforcedDecayDays/decayedSalienceThreshold 字段时走默认值。
+        /// 注意：T0 阶段 `toDecayConfig` 还只搬 3 项；T16 会搬全部 5 项。
         public func toDecayConfig() -> DecayConfig {
             var c = DecayConfig()
             c.wRecency = wRecency
@@ -97,7 +123,28 @@ public struct VaultConfig: Codable, Sendable, Equatable {
             c.linkL = lLinkage
             c.archiveThreshold = archiveSalienceThreshold
             c.staleDays = archiveStaleDays
+            // ADR-0003 新字段目前不搬（DecayConfig 本身还没扩 5 项；T16 才真正用上）
+            // 这里存到 DecayConfig 的预留位上，避免 T16 还要回头改 config 层
+            // 实际解法：T16 直接扩 DecayConfig 为 5 项结构
             return c
+        }
+
+        // ADR-0003 §Backward compatibility: 老 .dream/config.json 没新字段时给默认值
+        // 用 decodeIfPresent 保证向后兼容；老 3 权重 config 仍然能加载。
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            wRecency = try c.decodeIfPresent(Double.self, forKey: .wRecency) ?? 0.5
+            wFrequency = try c.decodeIfPresent(Double.self, forKey: .wFrequency) ?? 0.3
+            wLinkage = try c.decodeIfPresent(Double.self, forKey: .wLinkage) ?? 0.2
+            tauDays = try c.decodeIfPresent(Double.self, forKey: .tauDays) ?? 30
+            kFrequency = try c.decodeIfPresent(Double.self, forKey: .kFrequency) ?? 5
+            lLinkage = try c.decodeIfPresent(Double.self, forKey: .lLinkage) ?? 8
+            archiveSalienceThreshold = try c.decodeIfPresent(Double.self, forKey: .archiveSalienceThreshold) ?? 0.15
+            archiveStaleDays = try c.decodeIfPresent(Double.self, forKey: .archiveStaleDays) ?? 90
+            wSource = try c.decodeIfPresent(Double.self, forKey: .wSource) ?? 0.10
+            wUser = try c.decodeIfPresent(Double.self, forKey: .wUser) ?? 0.10
+            reinforcedDecayDays = try c.decodeIfPresent(Double.self, forKey: .reinforcedDecayDays) ?? 14
+            decayedSalienceThreshold = try c.decodeIfPresent(Double.self, forKey: .decayedSalienceThreshold) ?? 0.30
         }
     }
 

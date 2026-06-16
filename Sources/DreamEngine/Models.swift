@@ -14,10 +14,23 @@ public struct SourceRef: Codable, Equatable, Hashable, Sendable {
 
 // MARK: - 一条教训 / 记忆
 
+// MARK: - 记忆状态（ADR-0003: 6 态生命周期）
+//
+// 状态机：
+//   candidate → durable → reinforced ↔ durable
+//                            ↓
+//                          decayed → archived
+//   任何状态 + 矛盾 → conflict → durable/archived (人工裁决)
+//
+// 向后兼容：老 ledger.json 只含 candidate/durable/archived 三个值，
+// 自定义 init(from:) 在 §老 ledger 解码段给后三个新状态打默认值。
 public enum MemoryStatus: String, Codable, Sendable {
     case candidate   // 单源观察，仅进 wiki 候选区
     case durable     // 多源支撑，进 MEMORY.md
+    case reinforced  // 近期被访问/链接/用户确认 → 衰减更慢（ADR-0003 §Lifecycle states）
+    case decayed     // 低于 durable 基准但高于 archive 阈值（中间可观测态）
     case archived    // 被衰减降级，移入 archive，可找回
+    case conflict    // 与另一条 memory 矛盾，等待人工裁决（不静默删）
 }
 
 // MARK: - 记忆分类（架构文档第 1 节 wiki/{entities,concepts,syntheses}/）
@@ -71,6 +84,17 @@ public struct Memory: Codable, Identifiable, Equatable, Sendable {
     /// 旧 ledger 没有此字段 → 默认空（首次 reinforce 会写回）。
     public var lastReinforceBySource: [String: Date]
 
+    // MARK: - ADR-0003 新增字段（6 态生命周期 + 5 项 salience）
+
+    /// 最近一次"被强化"的时间。nil = 从未被强化过。
+    /// 驱动 durable ↔ reinforced 切换：超过 reinforcedThreshold 时间未强化 → 回到 durable。
+    /// 老 ledger 没有此字段 → 默认 nil（首次 reinforce 时写回）。
+    public var lastReinforcedAt: Date?
+
+    /// 5 项加权 salience 的缓存值。nil = 还没算过（首次 Decayer.run 后会写）。
+    /// 不序列化到 JSON（每次 dream run 都重算）；写回会让 ledger.json 变得脆弱。
+    public var salienceScore: Double? = nil
+
     public init(id: String = UUID().uuidString,
                 text: String,
                 sources: [SourceRef],
@@ -83,7 +107,9 @@ public struct Memory: Codable, Identifiable, Equatable, Sendable {
                 decayClass: DecayClass = .normal,
                 kind: MemoryKind = MemoryKind.defaultKind,
                 relatedTo: [String] = [],
-                lastReinforceBySource: [String: Date] = [:]) {
+                lastReinforceBySource: [String: Date] = [:],
+                lastReinforcedAt: Date? = nil,
+                salienceScore: Double? = nil) {
         self.id = id; self.text = text; self.sources = sources
         self.status = status; self.createdAt = createdAt
         self.lastAccess = lastAccess; self.reinforceCount = reinforceCount
@@ -92,6 +118,8 @@ public struct Memory: Codable, Identifiable, Equatable, Sendable {
         self.kind = kind
         self.relatedTo = relatedTo
         self.lastReinforceBySource = lastReinforceBySource
+        self.lastReinforcedAt = lastReinforcedAt
+        self.salienceScore = salienceScore
     }
 
     /// 自定义解码：旧 ledger.json 没有 kind/relatedTo/decayClass 字段时
@@ -114,6 +142,11 @@ public struct Memory: Codable, Identifiable, Equatable, Sendable {
         // P9c-P0-2: lastReinforceBySource 旧 ledger 没有时给空 dict（首次 reinforce 会写回）
         lastReinforceBySource = try c.decodeIfPresent([String: Date].self,
                                                      forKey: .lastReinforceBySource) ?? [:]
+        // ADR-0003: lastReinforcedAt 旧 ledger 没有时给 nil（首次 reinforce 会写回）
+        lastReinforcedAt = try c.decodeIfPresent(Date.self, forKey: .lastReinforcedAt)
+        // ADR-0003: salienceScore 永远不序列化到 JSON（每次 dream run 重算），
+        // 但为安全保留 decodeIfPresent，nil 也 OK
+        salienceScore = try c.decodeIfPresent(Double.self, forKey: .salienceScore)
     }
 
     /// 独立来源数（按文件去重）——决定能否从 candidate 升为 durable
