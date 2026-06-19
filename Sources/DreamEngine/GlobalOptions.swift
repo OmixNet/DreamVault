@@ -7,6 +7,12 @@ import Foundation
 public struct GlobalOptions {
     public var vault: String?
     public var llm: String?
+    /// PR 10 (dreamforge v0.2): --base-url flag, 覆盖 LLM base URL (云端 OpenAI-compatible).
+    /// 优先级: --base-url flag > OLLAMA_BASE_URL env > vault config > settings > default
+    public var baseURL: String?
+    /// PR 10: --model flag, 覆盖 LLM model name
+    /// 优先级: --model flag > OLLAMA_MODEL env > vault config > settings > default
+    public var model: String?
     public var verbose: Bool = false
 
     public struct RuntimeContext: @unchecked Sendable {
@@ -43,6 +49,16 @@ public struct GlobalOptions {
             case "--llm":
                 if i + 1 < args.count {
                     o.llm = args[i + 1]
+                    args.removeSubrange(i...i + 1)
+                } else { i += 1 }
+            case "--base-url":  // PR 10: OpenAI-compatible base URL
+                if i + 1 < args.count {
+                    o.baseURL = args[i + 1]
+                    args.removeSubrange(i...i + 1)
+                } else { i += 1 }
+            case "--model":  // PR 10: model name override
+                if i + 1 < args.count {
+                    o.model = args[i + 1]
                     args.removeSubrange(i...i + 1)
                 } else { i += 1 }
             case "--verbose", "-v":
@@ -82,11 +98,12 @@ public struct GlobalOptions {
         let vaultConfig: VaultConfig? = FileManager.default.fileExists(atPath: configURL.path)
             ? try DreamConfigLoader.load(vaultRoot: vault, writeDefaultIfMissing: false)
             : nil
+        // PR 10: --base-url / --model flag 优先于 env vars, env vars 仍作为兜底
         return ResolvedDreamRuntimeConfig.resolve(
             cli: ResolvedDreamRuntimeConfig.CLIOverrides(
                 provider: parseProvider(llm),
-                model: env["OLLAMA_MODEL"],
-                baseURL: env["OLLAMA_BASE_URL"]
+                model: model ?? env["OLLAMA_MODEL"],
+                baseURL: baseURL ?? env["OLLAMA_BASE_URL"]
             ),
             vaultConfig: vaultConfig,
             settings: DreamSettings.load(),
@@ -185,22 +202,31 @@ public struct GlobalOptions {
         switch r.llm.provider {
         case .mock:
             return MockLLMProvider()
-        case .ollama, .openaiCompat:
-            // 两个 provider 共用 OllamaProvider 实现（OpenAI 兼容协议）
-            let apiKey: String?
-            if r.llm.provider == .openaiCompat, let item = r.llm.keychainItem {
-                apiKey = Keychain.loadIfPresent(itemName: item)
-            } else {
-                apiKey = nil
-            }
-            return OllamaProvider(baseURL: r.llm.baseURL, model: r.llm.model, apiKey: apiKey)
+        case .ollama:
+            // 本地 Ollama — 无需 API key, 走 OllamaProvider (OpenAI 兼容协议).
+            return OllamaProvider(baseURL: r.llm.baseURL, model: r.llm.model, apiKey: nil)
+        case .openaiCompat:
+            // v0.5 P2c-2: 云端 OpenAI-compat endpoint (OpenRouter / SiliconFlow /
+            // 自建 OpenAI 兼容服务) 走独立 OpenAICompatibleProvider.
+            //
+            // **DreamVault 不读 macOS Keychain**. API key 通过 DREAMFORGE_LLM_API_KEY
+            // env var 注入 — DreamX Rust (PR 27) 在 dreamvault_run 时从 Keychain 读
+            // value 后 Command::env() 注入到 dream subprocess. 本构造时不传 apiKey,
+            // 让 OpenAICompatibleProvider.init 自己读 env var.
+            //
+            // 如果 env var 为空 (例如 user 没在 Settings 里 Save, 或 DreamX 没注入),
+            // provider 的 apiKey = nil, complete() 立即抛 .missingAPIKey. 不 fallback
+            // 到 Ollama / Keychain — 这是边界锁 (per user 2026-06-19 拍板).
+            return OpenAICompatibleProvider(baseURL: r.llm.baseURL, model: r.llm.model)
         }
     }
 
     /// 显式构造（测试用）
-    public init(vault: String? = nil, llm: String? = nil, verbose: Bool = false) {
+    public init(vault: String? = nil, llm: String? = nil, baseURL: String? = nil, model: String? = nil, verbose: Bool = false) {
         self.vault = vault
         self.llm = llm
+        self.baseURL = baseURL
+        self.model = model
         self.verbose = verbose
     }
 }
