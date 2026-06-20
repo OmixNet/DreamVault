@@ -67,47 +67,59 @@ public struct OpenAICompatibleProvider: LLMProvider, Sendable {
     }
 
     public enum OpenAICompatibleError: Error, CustomStringConvertible, LocalizedError {
-        /// Stable "missing key" error. The hint string is generic — it tells
-        /// the user how to set the key (env var) but NEVER contains the key
-        /// value (it doesn't exist yet, but the invariant is locked).
+        /// v0.6 PR 34 contract: 6 stable categories that DreamX UI maps to
+        /// short actionable copy. Each case's description is prefixed with
+        /// `[OPENAI_<CATEGORY>]` so DreamX can pattern-match without parsing
+        /// free-form error text. The 6 categories:
+        ///
+        /// 1. `.missingAPIKey` — env var unset, no HTTP request issued
+        /// 2. `.authFailed` — HTTP 401 / 403 (key wrong or revoked)
+        /// 3. `.modelNotFound` — HTTP 404 (model id doesn't exist on provider)
+        /// 4. `.timeout` — `URLError.timedOut` (request exceeded timeoutSeconds)
+        /// 5. `.malformedResponse` — 2xx but response shape doesn't match
+        ///    OpenAI-compat `{ choices: [{ message: { content: "..." } }] }`
+        /// 6. `.networkFailed` — catch-all: 5xx, other 4xx (rate limit etc.),
+        ///    DNS / TCP / TLS / unknown URLError. Surfaced as "network failed"
+        ///    because from a user perspective "server rejected / unreachable"
+        ///    and "DNS failed" are the same fix action (retry / check network).
         case missingAPIKey(String)
-        /// HTTP non-2xx. Covers 401 (auth failed) / 403 (forbidden) /
-        /// 404 (model unavailable) / 429 (rate limited) / 5xx (server error).
-        /// Body is included for debugging but may contain provider-specific
-        /// error structure — NOT the API key value.
-        case badStatus(Int, body: String)
-        /// Response body was 2xx but doesn't match the expected OpenAI-compat
-        /// shape `{ choices: [{ message: { content: "..." } }] }`.
+        case authFailed(Int, body: String)
+        case modelNotFound(Int, body: String)
+        case timeout
         case malformedResponse(String)
-        /// URLSession-level error (DNS, TCP, TLS, timeout).
-        case transport(Error)
+        case networkFailed(String)
 
         public var description: String {
             switch self {
             case .missingAPIKey(let hint):
-                return "OpenAI-compatible missing API key: \(hint)"
-            case .badStatus(let code, let body):
-                // Stable prefix lets users grep for this category. Body is
-                // included for debugging but may be truncated by the provider.
-                return "OpenAI-compatible HTTP \(code): \(body)"
+                return "[OPENAI_MISSING_KEY] OpenAI-compatible missing API key: \(hint)"
+            case .authFailed(let code, let body):
+                return "[OPENAI_AUTH_FAILED] OpenAI-compatible HTTP \(code): \(body)"
+            case .modelNotFound(let code, let body):
+                return "[OPENAI_MODEL_NOT_FOUND] OpenAI-compatible HTTP \(code): \(body)"
+            case .timeout:
+                return "[OPENAI_TIMEOUT] OpenAI-compatible request timed out after the configured timeout"
             case .malformedResponse(let s):
-                return "OpenAI-compatible response malformed: \(s)"
-            case .transport(let e):
-                return "OpenAI-compatible transport error: \(e.localizedDescription)"
+                return "[OPENAI_MALFORMED] OpenAI-compatible response malformed: \(s)"
+            case .networkFailed(let detail):
+                return "[OPENAI_NETWORK_FAILED] OpenAI-compatible network failed: \(detail)"
             }
         }
 
         public var errorDescription: String? { description }
 
-        /// Stable category label used by error-format tests + (future) UI
-        /// surface. NOT for stable error.message matching — DreamX consumes
-        /// the full `description` string. This is for categorization only.
+        /// Stable category label used by error-format tests + DreamX UI.
+        /// The 6 values correspond 1:1 to the user's v0.6 plan categories
+        /// (PR 34). NOT for stable error.message matching — DreamX consumes
+        /// the `[OPENAI_<CATEGORY>]` prefix in `description` for parsing.
         public var category: String {
             switch self {
             case .missingAPIKey: return "missing-api-key"
-            case .badStatus: return "bad-status"
+            case .authFailed: return "auth-failed"
+            case .modelNotFound: return "model-not-found"
+            case .timeout: return "timeout"
             case .malformedResponse: return "malformed-response"
-            case .transport: return "transport"
+            case .networkFailed: return "network-failed"
             }
         }
     }
@@ -148,15 +160,30 @@ public struct OpenAICompatibleProvider: LLMProvider, Sendable {
         let response: URLResponse
         do {
             (data, response) = try await session.data(for: req)
+        } catch let error as URLError where error.code == .timedOut {
+            throw OpenAICompatibleError.timeout
         } catch {
-            throw OpenAICompatibleError.transport(error)
+            throw OpenAICompatibleError.networkFailed(error.localizedDescription)
         }
         guard let http = response as? HTTPURLResponse else {
             throw OpenAICompatibleError.malformedResponse("非 HTTP 响应")
         }
         guard (200..<300).contains(http.statusCode) else {
             let body = String(data: data, encoding: .utf8) ?? ""
-            throw OpenAICompatibleError.badStatus(http.statusCode, body: body)
+            // 6-category split (v0.6 PR 34): auth vs model-not-found vs catch-all
+            switch http.statusCode {
+            case 401, 403:
+                throw OpenAICompatibleError.authFailed(http.statusCode, body: body)
+            case 404:
+                throw OpenAICompatibleError.modelNotFound(http.statusCode, body: body)
+            default:
+                // 5xx, 400, 405, 429, etc. all surface as "network failed" —
+                // from a user perspective, "server rejected" and "server
+                // unreachable" share the same fix action (retry / check).
+                throw OpenAICompatibleError.networkFailed(
+                    "HTTP \(http.statusCode): \(body)"
+                )
+            }
         }
         // Parse OpenAI-compat response: { choices: [{ message: { content: "..." } }] }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

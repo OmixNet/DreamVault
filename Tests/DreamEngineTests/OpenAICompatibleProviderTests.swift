@@ -1,19 +1,24 @@
 import XCTest
 @testable import DreamEngine
 
-/// v0.5 PR 28 P2c-2: OpenAICompatibleProvider unit tests.
+/// v0.5 PR 28 P2c-2 + v0.6 PR 34: OpenAICompatibleProvider unit tests.
 ///
-/// Coverage (locked by user 2026-06-19):
+/// Coverage (locked by user 2026-06-19 + 2026-06-21):
 ///   1. request shape: POST /v1/chat/completions + Content-Type + Bearer auth
 ///   2. 200 + typical OpenAI-compat response → `choices[0].message.content`
-///   3. HTTP 401 → `.badStatus(401, body: ...)` (auth failed — stable category)
-///   4. HTTP 404 → `.badStatus(404, body: ...)` (model unavailable)
-///   5. malformed response (missing `choices`) → `.malformedResponse`
-///   6. transport error → `.transport(...)`
-///   7. missing API key (env var empty, no init apiKey) → `.missingAPIKey`,
+///   3. HTTP 401 → `.authFailed(401, body: ...)` (PR 34: split from .badStatus)
+///   4. HTTP 404 → `.modelNotFound(404, body: ...)` (PR 34: split from .badStatus)
+///   5. HTTP 500 → `.networkFailed("HTTP 500: ...")` (PR 34: merged with 5xx/other)
+///   6. URLError.timedOut → `.timeout` (PR 34: split from .transport)
+///   7. URLError.notConnectedToInternet → `.networkFailed(...)` (PR 34: split)
+///   8. malformed response (missing `choices`) → `.malformedResponse`
+///   9. missing API key (env var empty, no init apiKey) → `.missingAPIKey`,
 ///      NO HTTP request issued
-///   8. security invariant: apiKey VALUE never appears in error description
+///  10. security invariant: apiKey VALUE never appears in error description
 ///      strings (test "SECRET-LEAK-12345" pattern from Rust PR 27)
+///  11. v0.6 PR 34 contract: every error description is prefixed with a
+///      stable `[OPENAI_*]` tag so DreamX UI can map to short actionable
+///      copy without parsing free-form text
 ///
 /// Boundary lock (user 2026-06-19):
 ///   - `GlobalOptions.makeProvider` returns provider that throws
@@ -111,11 +116,13 @@ final class OpenAICompatibleProviderTests: XCTestCase {
         XCTAssertEqual(messages?[1]["content"] as? String, "usr")
     }
 
-    /// 3: HTTP 401 → stable `.badStatus(401, body: ...)` with auth-failed hint.
+    /// 3: HTTP 401 → stable `.authFailed(401, body: ...)` with auth-failed hint.
     /// OpenAI-compatible auth failure is "missing or wrong API key" — the
     /// error category must be discoverable so DreamX UI can show a useful
-    /// message ("check API key in Settings").
-    func testComplete_http401_throwsBadStatus() async throws {
+    /// message ("check API key in Settings"). PR 34 split `.badStatus` into
+    /// `.authFailed` / `.modelNotFound` / `.networkFailed` so each maps to
+    /// a specific fix action in the UI.
+    func testComplete_http401_throwsAuthFailed() async throws {
         let (session, cleanup) = makeMockSession()
         defer { cleanup() }
 
@@ -133,22 +140,28 @@ final class OpenAICompatibleProviderTests: XCTestCase {
         do {
             _ = try await provider.complete(system: "sys", user: "usr")
             XCTFail("expected throw on 401")
-        } catch let OpenAICompatibleProvider.OpenAICompatibleError.badStatus(code, body) {
+        } catch let OpenAICompatibleProvider.OpenAICompatibleError.authFailed(code, body) {
             XCTAssertEqual(code, 401)
             // Body must include the provider's error message for debugging
             // but MUST NOT include the apiKey value (security invariant).
             XCTAssertTrue(body.contains("Invalid API key"))
             XCTAssertFalse(body.contains("sk-or-v1-bad-key"),
                             "apiKey value must not leak into error body: \(body)")
+            // PR 34: description is prefixed with stable tag for UI parsing.
+            let desc = OpenAICompatibleProvider.OpenAICompatibleError
+                .authFailed(code, body: body).description
+            XCTAssertTrue(desc.hasPrefix("[OPENAI_AUTH_FAILED]"),
+                          "description must start with [OPENAI_AUTH_FAILED] tag: \(desc)")
         } catch {
-            XCTFail("expected .badStatus, got \(error)")
+            XCTFail("expected .authFailed, got \(error)")
         }
     }
 
-    /// 4: HTTP 404 → `.badStatus(404)`. OpenRouter returns 404 when the
-    /// requested model id doesn't exist. Stable category so DreamX UI can
-    /// show "model unavailable — check Settings → AI → Model ID".
-    func testComplete_http404_throwsBadStatus() async throws {
+    /// 4: HTTP 404 → `.modelNotFound(404)`. OpenRouter returns 404 when the
+    /// requested model id doesn't exist. PR 34 split this out so DreamX UI
+    /// can show "model unavailable — check Settings → AI → Model ID" with
+    /// a different fix action than auth failures.
+    func testComplete_http404_throwsModelNotFound() async throws {
         let (session, cleanup) = makeMockSession()
         defer { cleanup() }
 
@@ -166,10 +179,15 @@ final class OpenAICompatibleProviderTests: XCTestCase {
         do {
             _ = try await provider.complete(system: "s", user: "u")
             XCTFail("expected throw on 404")
-        } catch let OpenAICompatibleProvider.OpenAICompatibleError.badStatus(code, _) {
+        } catch let OpenAICompatibleProvider.OpenAICompatibleError.modelNotFound(code, _) {
             XCTAssertEqual(code, 404)
+            // PR 34: description prefix.
+            let desc = OpenAICompatibleProvider.OpenAICompatibleError
+                .modelNotFound(code, body: "model not found").description
+            XCTAssertTrue(desc.hasPrefix("[OPENAI_MODEL_NOT_FOUND]"),
+                          "description must start with [OPENAI_MODEL_NOT_FOUND] tag: \(desc)")
         } catch {
-            XCTFail("expected .badStatus, got \(error)")
+            XCTFail("expected .modelNotFound, got \(error)")
         }
     }
 
@@ -196,21 +214,26 @@ final class OpenAICompatibleProviderTests: XCTestCase {
             _ = try await provider.complete(system: "s", user: "u")
             XCTFail("expected throw on malformed response")
         } catch OpenAICompatibleProvider.OpenAICompatibleError.malformedResponse {
-            // Expected
+            // Expected. PR 34: also verify the description tag.
+            let desc = OpenAICompatibleProvider.OpenAICompatibleError
+                .malformedResponse("raw").description
+            XCTAssertTrue(desc.hasPrefix("[OPENAI_MALFORMED]"),
+                          "description must start with [OPENAI_MALFORMED] tag: \(desc)")
         } catch {
             XCTFail("expected .malformedResponse, got \(error)")
         }
     }
 
-    /// 6: Transport error → `.transport(...)`. URLSession-level failures
-    /// (DNS, TCP, TLS, timeout) are surfaced as `.transport` so DreamX can
-    /// tell "network problem" apart from "API rejected our request".
-    func testComplete_transportError_throwsTransport() async throws {
+    /// 6: Non-timeout transport error → `.networkFailed(...)`. PR 34 split
+    /// `.transport` into `.timeout` (URLError.timedOut) / `.networkFailed`
+    /// (DNS, TCP, TLS, etc.) so DreamX UI can show a "Retry" button for
+    /// timeouts vs a "Check connection" hint for DNS / not-connected.
+    /// `.notConnectedToInternet` is the canonical "no network" case →
+    /// maps to `.networkFailed`, NOT `.timeout`.
+    func testComplete_transportNotConnected_throwsNetworkFailed() async throws {
         let (session, cleanup) = makeMockSession()
         defer { cleanup() }
 
-        // Handler returns an empty body but the URLProtocol stub will simulate
-        // a transport error by overriding startLoading to fail.
         final class TransportErrorSimulator: URLProtocol, @unchecked Sendable {
             override class func canInit(with request: URLRequest) -> Bool { true }
             override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -219,8 +242,6 @@ final class OpenAICompatibleProviderTests: XCTestCase {
             }
             override func stopLoading() {}
         }
-        // Replace the registered class via a new configuration so this test
-        // uses the transport-error simulator instead of the standard handler.
         let transportSession = URLSession(configuration: {
             let cfg = URLSessionConfiguration.ephemeral
             cfg.protocolClasses = [TransportErrorSimulator.self]
@@ -238,10 +259,55 @@ final class OpenAICompatibleProviderTests: XCTestCase {
         do {
             _ = try await provider.complete(system: "s", user: "u")
             XCTFail("expected throw on transport error")
-        } catch OpenAICompatibleProvider.OpenAICompatibleError.transport {
-            // Expected — underlying URLError is wrapped in .transport
+        } catch OpenAICompatibleProvider.OpenAICompatibleError.networkFailed {
+            // Expected — DNS / not-connected / TLS / etc. all surface as
+            // .networkFailed with the underlying URLError description.
         } catch {
-            XCTFail("expected .transport, got \(error)")
+            XCTFail("expected .networkFailed, got \(error)")
+        }
+        _ = session // silence unused warning
+    }
+
+    /// 6b: Timeout transport error → `.timeout` (PR 34 split). URLError
+    /// with code `.timedOut` is the canonical "request exceeded timeout"
+    /// case → maps to `.timeout`, NOT `.networkFailed`. DreamX UI can
+    /// distinguish "Retry the same request" from "Check your connection".
+    func testComplete_transportTimedOut_throwsTimeout() async throws {
+        let (session, cleanup) = makeMockSession()
+        defer { cleanup() }
+
+        final class TimeoutErrorSimulator: URLProtocol, @unchecked Sendable {
+            override class func canInit(with request: URLRequest) -> Bool { true }
+            override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+            override func startLoading() {
+                client?.urlProtocol(self, didFailWithError: URLError(.timedOut))
+            }
+            override func stopLoading() {}
+        }
+        let timeoutSession = URLSession(configuration: {
+            let cfg = URLSessionConfiguration.ephemeral
+            cfg.protocolClasses = [TimeoutErrorSimulator.self]
+            return cfg
+        }())
+        defer { timeoutSession.invalidateAndCancel() }
+
+        let provider = OpenAICompatibleProvider(
+            baseURL: URL(string: "https://test.invalid")!,
+            model: "anthropic/claude-sonnet-4.5",
+            apiKey: "sk-or-v1-test",
+            session: timeoutSession
+        )
+
+        do {
+            _ = try await provider.complete(system: "s", user: "u")
+            XCTFail("expected throw on transport timeout")
+        } catch OpenAICompatibleProvider.OpenAICompatibleError.timeout {
+            // Expected. PR 34: description is prefixed with [OPENAI_TIMEOUT].
+            let desc = OpenAICompatibleProvider.OpenAICompatibleError.timeout.description
+            XCTAssertTrue(desc.hasPrefix("[OPENAI_TIMEOUT]"),
+                          "description must start with [OPENAI_TIMEOUT] tag: \(desc)")
+        } catch {
+            XCTFail("expected .timeout, got \(error)")
         }
         _ = session // silence unused warning
     }
@@ -288,6 +354,11 @@ final class OpenAICompatibleProviderTests: XCTestCase {
                           "hint should mention the env var: \(hint)")
             XCTAssertFalse(hint.contains("sk-"),
                             "hint must not leak any apiKey shape: \(hint)")
+            // PR 34: full description is prefixed with [OPENAI_MISSING_KEY].
+            let desc = OpenAICompatibleProvider.OpenAICompatibleError
+                .missingAPIKey(hint).description
+            XCTAssertTrue(desc.hasPrefix("[OPENAI_MISSING_KEY]"),
+                          "description must start with [OPENAI_MISSING_KEY] tag: \(desc)")
         } catch {
             XCTFail("expected .missingAPIKey, got \(error)")
         }
@@ -304,8 +375,11 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     /// prefix that wraps the body — that prefix must not contain the
     /// apiKey value or any reshuffled version of it.
     ///
-    /// Pattern from Rust PR 27: include a distinctive secret marker and
-    /// assert it does not appear in the provider's prefix.
+    /// PR 34: HTTP 500 now maps to `.networkFailed` (5xx merged with
+    /// other URLError into the "network failed" catch-all). The body
+    /// leak invariant is unchanged: the provider does not synthesize
+    /// the body, so the server's leak is preserved 1:1, but the prefix
+    /// (provider-controlled) is fixed and contains NO secret value.
     func testComplete_doesNotLeakAPIKeyIntoErrorDescription() async throws {
         let (session, cleanup) = makeMockSession()
         defer { cleanup() }
@@ -326,53 +400,105 @@ final class OpenAICompatibleProviderTests: XCTestCase {
         do {
             _ = try await provider.complete(system: "s", user: "u")
             XCTFail("expected throw on 500")
-        } catch let OpenAICompatibleProvider.OpenAICompatibleError.badStatus(code, body) {
-            XCTAssertEqual(code, 500)
+        } catch let OpenAICompatibleProvider.OpenAICompatibleError.networkFailed(detail) {
+            // 5xx is rolled into .networkFailed per PR 34. The detail
+            // string is `<prefix>: HTTP <code>: <body>` so DreamX UI can
+            // still display the HTTP code if needed. The apiKey must
+            // appear exactly once in the detail (the server's echo).
+            XCTAssertTrue(detail.contains("HTTP 500"),
+                          "networkFailed detail should include HTTP code: \(detail)")
 
             // Provider does not synthesize any portion of the body. The body
-            // is exactly what the server returned. Verify that the body's
+            // is exactly what the server returned. Verify that the detail's
             // apiKey mention count is exactly 1 (the server's), not
             // duplicated by the provider.
-            XCTAssertEqual(body.components(separatedBy: "SECRET-LEAK-12345").count - 1, 1,
-                           "provider must not duplicate the apiKey value in body: \(body)")
+            XCTAssertEqual(detail.components(separatedBy: "SECRET-LEAK-12345").count - 1, 1,
+                           "provider must not duplicate the apiKey value in detail: \(detail)")
 
-            // The description format is `<prefix>: <body>`. The PREFIX is
-            // provider-controlled; the body is server-controlled. The
-            // invariant we lock: the prefix must not contain the apiKey.
-            let desc = OpenAICompatibleProvider.OpenAICompatibleError.badStatus(code, body: body).description
-            XCTAssertTrue(desc.hasPrefix("OpenAI-compatible HTTP \(code):"),
-                          "description prefix must be provider-controlled and stable: \(desc)")
-            // The prefix should be ONLY the format string + HTTP code, no
-            // apiKey. Strip the prefix + body and verify nothing else is
-            // appended that contains the apiKey.
-            let prefix = "OpenAI-compatible HTTP \(code):"
-            XCTAssertEqual(desc, prefix + " " + body,
-                           "description must be exactly prefix + space + verbatim body: \(desc)")
+            // The description format is `[OPENAI_NETWORK_FAILED] network
+            // failed: <detail>`. The PREFIX is provider-controlled; the
+            // detail is server-controlled. The invariant we lock: the
+            // prefix must not contain the apiKey.
+            let desc = OpenAICompatibleProvider.OpenAICompatibleError
+                .networkFailed(detail).description
+            XCTAssertTrue(desc.hasPrefix("[OPENAI_NETWORK_FAILED]"),
+                          "description must start with [OPENAI_NETWORK_FAILED] tag: \(desc)")
+            // The description should be exactly the tag + space + "network
+            // failed: " + detail, no apiKey in the provider-controlled
+            // part.
+            let prefix = "[OPENAI_NETWORK_FAILED] OpenAI-compatible network failed:"
+            XCTAssertEqual(desc, prefix + " " + detail,
+                           "description must be exactly tag + space + 'network failed: ' + detail: \(desc)")
         } catch {
-            XCTFail("expected .badStatus, got \(error)")
+            XCTFail("expected .networkFailed, got \(error)")
         }
     }
 
     /// 9: Error category stability — `category` returns a stable string for
-    /// each case. This is the contract DreamX UI can rely on for surfacing
-    /// category-specific messaging ("API key problem" / "model unavailable"
-    /// / etc.) without parsing the full description.
+    /// each of the 6 cases (v0.6 PR 34). This is the contract DreamX UI
+    /// can rely on for surfacing category-specific messaging without
+    /// parsing the full description.
     func testErrorCategory_isStableAcrossCases() {
         XCTAssertEqual(
             OpenAICompatibleProvider.OpenAICompatibleError.missingAPIKey("hint").category,
             "missing-api-key"
         )
         XCTAssertEqual(
-            OpenAICompatibleProvider.OpenAICompatibleError.badStatus(401, body: "x").category,
-            "bad-status"
+            OpenAICompatibleProvider.OpenAICompatibleError.authFailed(401, body: "x").category,
+            "auth-failed"
+        )
+        XCTAssertEqual(
+            OpenAICompatibleProvider.OpenAICompatibleError.modelNotFound(404, body: "x").category,
+            "model-not-found"
+        )
+        XCTAssertEqual(
+            OpenAICompatibleProvider.OpenAICompatibleError.timeout.category,
+            "timeout"
         )
         XCTAssertEqual(
             OpenAICompatibleProvider.OpenAICompatibleError.malformedResponse("x").category,
             "malformed-response"
         )
         XCTAssertEqual(
-            OpenAICompatibleProvider.OpenAICompatibleError.transport(URLError(.timedOut)).category,
-            "transport"
+            OpenAICompatibleProvider.OpenAICompatibleError.networkFailed("x").category,
+            "network-failed"
+        )
+    }
+
+    /// 9b: PR 34 — every error description MUST be prefixed with a stable
+    /// `[OPENAI_*]` tag so DreamX UI can map to short actionable copy
+    /// without parsing free-form text. This is the cross-language contract
+    /// between DreamVault (Swift) and DreamX (TS).
+    func testErrorDescription_hasStableTagPrefix() {
+        XCTAssertTrue(
+            OpenAICompatibleProvider.OpenAICompatibleError.missingAPIKey("hint")
+                .description.hasPrefix("[OPENAI_MISSING_KEY]"),
+            "missingAPIKey must be tagged [OPENAI_MISSING_KEY]"
+        )
+        XCTAssertTrue(
+            OpenAICompatibleProvider.OpenAICompatibleError.authFailed(401, body: "x")
+                .description.hasPrefix("[OPENAI_AUTH_FAILED]"),
+            "authFailed must be tagged [OPENAI_AUTH_FAILED]"
+        )
+        XCTAssertTrue(
+            OpenAICompatibleProvider.OpenAICompatibleError.modelNotFound(404, body: "x")
+                .description.hasPrefix("[OPENAI_MODEL_NOT_FOUND]"),
+            "modelNotFound must be tagged [OPENAI_MODEL_NOT_FOUND]"
+        )
+        XCTAssertTrue(
+            OpenAICompatibleProvider.OpenAICompatibleError.timeout
+                .description.hasPrefix("[OPENAI_TIMEOUT]"),
+            "timeout must be tagged [OPENAI_TIMEOUT]"
+        )
+        XCTAssertTrue(
+            OpenAICompatibleProvider.OpenAICompatibleError.malformedResponse("x")
+                .description.hasPrefix("[OPENAI_MALFORMED]"),
+            "malformedResponse must be tagged [OPENAI_MALFORMED]"
+        )
+        XCTAssertTrue(
+            OpenAICompatibleProvider.OpenAICompatibleError.networkFailed("x")
+                .description.hasPrefix("[OPENAI_NETWORK_FAILED]"),
+            "networkFailed must be tagged [OPENAI_NETWORK_FAILED]"
         )
     }
 
