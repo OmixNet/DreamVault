@@ -97,4 +97,56 @@ final class DreamCLIParserTests: XCTestCase {
         XCTAssertTrue(p is OllamaProvider,
                       "未知 --llm 在 P8 走 ResolvedConfig 5 层合并，settings 默认 .ollama")
     }
+
+    // MARK: - v0.6 PR 36: Anthropic + Gemini routing
+
+    func testLLMProvider_Anthropic() {
+        // v0.6 PR 36: --llm anthropic → AnthropicProvider (NOT OpenAICompatibleProvider,
+        // NOT Ollama, NOT Mock).
+        let opts = GlobalOptions(
+            llm: "anthropic",
+            baseURL: "https://api.anthropic.com",
+            model: "claude-sonnet-4-5",
+        )
+        let p = opts.llmProvider()
+        XCTAssertTrue(p is AnthropicProvider, "--llm anthropic → AnthropicProvider")
+        // Boundary lock: apiKey is nil (no env var in test runner, no init arg).
+        XCTAssertNil((p as? AnthropicProvider)?.apiKey,
+                     "Anthropic boundary lock: no env var → apiKey nil, .missingAPIKey on call")
+    }
+
+    func testLLMProvider_Gemini() {
+        // v0.6 PR 36: --llm gemini → GeminiProvider.
+        let opts = GlobalOptions(
+            llm: "gemini",
+            baseURL: "https://generativelanguage.googleapis.com",
+            model: "gemini-2.0-flash",
+        )
+        let p = opts.llmProvider()
+        XCTAssertTrue(p is GeminiProvider, "--llm gemini → GeminiProvider")
+        XCTAssertNil((p as? GeminiProvider)?.apiKey,
+                     "Gemini boundary lock: no env var → apiKey nil, .missingAPIKey on call")
+    }
+
+    func testLLMProvider_ClaudeAliasMapsToAnthropic() {
+        // v0.6 PR 36: --llm claude is a colloquial alias for anthropic.
+        let opts = GlobalOptions(
+            llm: "claude",
+            baseURL: "https://api.anthropic.com",
+            model: "claude-sonnet-4-5",
+        )
+        let p = opts.llmProvider()
+        XCTAssertTrue(p is AnthropicProvider, "--llm claude → AnthropicProvider (alias)")
+    }
+
+    func testLLMProvider_GoogleAliasMapsToGemini() {
+        // v0.6 PR 36: --llm google / google-gemini are aliases for gemini.
+        let opts = GlobalOptions(
+            llm: "google",
+            baseURL: "https://generativelanguage.googleapis.com",
+            model: "gemini-2.0-flash",
+        )
+        let p = opts.llmProvider()
+        XCTAssertTrue(p is GeminiProvider, "--llm google → GeminiProvider (alias)")
+    }
 }

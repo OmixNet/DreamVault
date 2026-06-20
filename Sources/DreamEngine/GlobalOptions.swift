@@ -125,12 +125,7 @@ public struct GlobalOptions {
             settings: DreamSettings.load()
         )
         let base = makeProvider(from: resolved)
-        let providerName: String
-        switch resolved.llm.provider {
-        case .mock: providerName = "mock"
-        case .ollama: providerName = "ollama"
-        case .openaiCompat: providerName = "openai-compat"
-        }
+        let providerName = Self.providerName(resolved.llm.provider)
         // BudgetManager 是 @MainActor 持有，clamp 到 Sendable closure 里要 await
         let budget = await MainActor.run {
             BudgetManager(config: resolved.budget, vaultRoot: vault)
@@ -155,17 +150,17 @@ public struct GlobalOptions {
     public func runtimeContext(writeDefaultVaultConfig: Bool = true) async throws -> RuntimeContext {
         let vault = vaultURL()
         let resolved = try resolvedRuntimeConfig(writeDefaultVaultConfig: writeDefaultVaultConfig)
-        if resolved.llm.provider == .openaiCompat,
+        // v0.6 PR 36: all 3 cloud providers (OpenAI-compat, Anthropic,
+        // Gemini) require the same explicit `allowCloudSendRawSummary`
+        // consent. Local Ollama + mock do not need it. The check covers
+        // all 3 cases in one switch so adding a 4th cloud provider in
+        // the future is a one-line change.
+        if Self.requiresCloudConsent(resolved.llm.provider),
            !resolved.privacy.allowCloudSendRawSummary {
             throw RuntimeConfigError.cloudProviderRequiresConsent
         }
         let base = makeProvider(from: resolved)
-        let providerName: String
-        switch resolved.llm.provider {
-        case .mock: providerName = "mock"
-        case .ollama: providerName = "ollama"
-        case .openaiCompat: providerName = "openai-compat"
-        }
+        let providerName = Self.providerName(resolved.llm.provider)
         let budget = await MainActor.run {
             BudgetManager(config: resolved.budget, vaultRoot: vault)
         }
@@ -189,6 +184,28 @@ public struct GlobalOptions {
             budgetManager: budget,
             dreamConfig: resolved.toDreamConfig()
         )
+    }
+
+    /// v0.6 PR 36: which providers require `allowCloudSendRawSummary` consent.
+    /// Locked at all 3 cloud providers; local (Ollama) + mock do not.
+    private static func requiresCloudConsent(_ provider: ResolvedDreamRuntimeConfig.ResolvedLLM.Provider) -> Bool {
+        switch provider {
+        case .mock, .ollama: return false
+        case .openaiCompat, .anthropic, .gemini: return true
+        }
+    }
+
+    /// v0.6 PR 36: stable string name for budget / logging. Used by
+    /// `BudgetedLLMProvider` so the budget UI shows "openai-compat" /
+    /// "anthropic" / "gemini" rather than the raw enum case.
+    private static func providerName(_ provider: ResolvedDreamRuntimeConfig.ResolvedLLM.Provider) -> String {
+        switch provider {
+        case .mock: return "mock"
+        case .ollama: return "ollama"
+        case .openaiCompat: return "openai-compat"
+        case .anthropic: return "anthropic"
+        case .gemini: return "gemini"
+        }
     }
 
     /// 把 CLI 字符串 (--llm ollama / mock / openai) 翻译成 ResolvedLLM.Provider
@@ -218,6 +235,15 @@ public struct GlobalOptions {
             // provider 的 apiKey = nil, complete() 立即抛 .missingAPIKey. 不 fallback
             // 到 Ollama / Keychain — 这是边界锁 (per user 2026-06-19 拍板).
             return OpenAICompatibleProvider(baseURL: r.llm.baseURL, model: r.llm.model)
+        case .anthropic:
+            // v0.6 PR 36: Anthropic Messages API. Same env-var boundary
+            // lock as OpenAI-compat. If env var is empty, init → apiKey
+            // = nil, complete() throws .missingAPIKey.
+            return AnthropicProvider(baseURL: r.llm.baseURL, model: r.llm.model)
+        case .gemini:
+            // v0.6 PR 36: Google Gemini generateContent API. Same env-var
+            // boundary lock as OpenAI-compat.
+            return GeminiProvider(baseURL: r.llm.baseURL, model: r.llm.model)
         }
     }
 

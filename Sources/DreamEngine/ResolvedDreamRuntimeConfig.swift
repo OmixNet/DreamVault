@@ -42,6 +42,12 @@ public struct ResolvedDreamRuntimeConfig: Equatable, Sendable {
             case mock
             case ollama
             case openaiCompat  // OpenAI 兼容 (SiliconFlow / DeepSeek / OpenAI 等)
+            /// v0.6 PR 36: Anthropic Messages API. Uses `x-api-key` header
+            /// and `anthropic-version: 2023-06-01`. NOT OpenAI-compat.
+            case anthropic
+            /// v0.6 PR 36: Google Gemini generateContent API. Uses
+            /// `x-goog-api-key` header. NOT OpenAI-compat, NOT Anthropic.
+            case gemini
         }
     }
 
@@ -278,6 +284,8 @@ public struct ResolvedDreamRuntimeConfig: Equatable, Sendable {
         switch provider {
         case .mock, .ollama: return nil
         case .openaiCompat: return "com.OmixNet.dreamvault.openai-key"
+        case .anthropic: return "com.OmixNet.dreamvault.anthropic-key"
+        case .gemini: return "com.OmixNet.dreamvault.gemini-key"
         }
     }
 
@@ -289,6 +297,14 @@ public struct ResolvedDreamRuntimeConfig: Equatable, Sendable {
             return .ollama
         case "openai", "openai_compat", "openai-compat", "openaicompat":
             return .openaiCompat
+        case "anthropic", "claude":
+            // v0.6 PR 36: accept both "anthropic" (canonical) and "claude"
+            // (colloquial) so users running `dream --llm claude` get the
+            // right provider.
+            return .anthropic
+        case "gemini", "google", "google-gemini":
+            // v0.6 PR 36: accept "gemini" / "google" / "google-gemini".
+            return .gemini
         default:
             return ResolvedLLM.Provider(rawValue: raw)
         }
