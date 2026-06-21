@@ -336,6 +336,7 @@ struct DreamCLI {
 
         用法:
           dream run     [--vault <path>] [--dry-run]
+                        [--llm mock|ollama|openai] [--base-url <URL>] [--model <name>]
           dream report  [--vault <path>] [--last N]
           dream status  [--vault <path>]
           dream rollback [--vault <path>]
@@ -348,14 +349,36 @@ struct DreamCLI {
         全局选项（可放在子命令前/后）:
           --vault <path>     vault 根目录
                             （默认 $DREAMVAULT_VAULT，否则 $HOME/.dreamvault）
-          --llm <name>       覆盖 DREAMVAULT_LLM（mock|ollama）
+          --llm <name>       覆盖 LLM provider（mock|ollama|openai）
+          --base-url <URL>   PR 10: 覆盖 LLM base URL
+                            （默认 OLLAMA_BASE_URL 或 http://127.0.0.1:11434）
+
+                            直接跑 dream CLI（手动 E2E / 调试）:
+                              ⚠️  URL 不能带 /v1 后缀
+                              OpenAICompatibleProvider / OllamaProvider 会自动
+                              追加 /v1/chat/completions; 填了 /v1 会变成
+                              https://host/v1/v1/chat/completions → 404
+
+                              ✓  对: --base-url https://api.siliconflow.cn
+                              ✗  错: --base-url https://api.siliconflow.cn/v1
+
+                            通过 DreamX GUI（普通用户路径）:
+                              Settings → AI → Base URL 可以填带 /v1 的完整 URL,
+                              dreamforge Rust (PR 10) 会自动 strip /v1 再传给
+                              dream CLI。所以 GUI 用户永远不会踩这个坑。
+          --model <name>     PR 10: 覆盖 LLM 模型名
+                            （默认 OLLAMA_MODEL 或 llama3.1）
           --verbose          打 detail
 
         环境变量:
-          DREAMVAULT_LLM     mock|ollama（默认 mock）
-          DREAMVAULT_VAULT   vault 默认路径
-          OLLAMA_BASE_URL    Ollama endpoint（默认 http://127.0.0.1:11434）
-          OLLAMA_MODEL       Ollama 模型名（默认 llama3.1）
+          DREAMVAULT_LLM       mock|ollama|openai（默认 mock）
+          DREAMVAULT_VAULT     vault 默认路径
+          OLLAMA_BASE_URL      Ollama endpoint（默认 http://127.0.0.1:11434）
+          OLLAMA_MODEL         Ollama 模型名（默认 llama3.1）
+          DREAMFORGE_LLM_API_KEY  PR 10: OpenAI-compatible API key
+                              优先级：env var > macOS Keychain
+                              安全性：dreamforge 用 Command::env() 注入,
+                              不进 CLI args (ps aux 不可见)
 
         退出码:
           0 成功
@@ -367,6 +390,11 @@ struct DreamCLI {
           dream run --vault ~/MyVault
           dream app --vault ~/MyVault              # 打开 GUI 窗口
           dream run --vault ~/MyVault --llm ollama
+          # PR 10: 云端 LLM (SiliconFlow DeepSeek)
+          DREAMFORGE_LLM_API_KEY=... dream run --vault ~/MyVault \\
+            --llm openai \\
+            --base-url https://api.siliconflow.cn \\
+            --model deepseek-ai/DeepSeek-V4-Pro
           dream report --last 3
           dream status
           dream rollback
