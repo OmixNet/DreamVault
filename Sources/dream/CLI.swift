@@ -160,6 +160,31 @@ struct DreamCLI {
 
     static func cmdStatus(_ args: [String], opts: GlobalOptions) -> Int32 {
         let vault = opts.vaultURL()
+        let jsonMode = args.contains("--json")
+        let report = buildStatusReport(vault: vault)
+        if jsonMode {
+            // PR 50a (v0.6.x): structured JSON output for the dreamforge
+            // Rust `dreamvault_status_json` command. The contract is
+            // locked in docs/superpowers/plans/2026-06-23-pr50-vault-
+            // stats-json-contract.md. schemaVersion is REQUIRED: 1.
+            // Strict acceptance on the Rust side — any other version
+            // returns a typed Err (no defaulting, no guessing). The
+            // frontend falls back to the existing text parse (PR 48
+            // parseDreamStatus) on the typed error.
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys] // deterministic output for snapshot tests
+            guard let data = try? encoder.encode(report) else {
+                FileHandle.standardError.write(Data("dream: failed to encode StatusReport\n".utf8))
+                return 1
+            }
+            guard let json = String(data: data, encoding: .utf8) else {
+                FileHandle.standardError.write(Data("dream: failed to convert StatusReport to UTF-8\n".utf8))
+                return 1
+            }
+            print(json)
+            return 0
+        }
+        // Text output (default, backwards compat for debug tools + terminal usage).
         let fm = FileManager.default
         print("vault: \(vault.path)")
 
@@ -202,6 +227,143 @@ struct DreamCLI {
             print("最近 dream-report: \(last.path)")
         }
         return 0
+    }
+
+    // PR 50a (v0.6.x): pure data builder for the StatusReport — extracted
+    // from cmdStatus so the JSON path is unit-testable without capturing
+    // stdout. The text path in cmdStatus computes the same data inline
+    // (kept for backwards compat with debug tooling that reads stdout).
+    //
+    // The contract is locked at schemaVersion: 1 in
+    // docs/superpowers/plans/2026-06-23-pr50-vault-stats-json-contract.md.
+    // Bumping the version is a breaking change and must be coordinated
+    // with the Rust strict-acceptance rule (lock at === 1).
+    public struct StatusReport: Codable, Equatable {
+        public let schemaVersion: UInt32
+        public let vaultPath: String
+        public let rawCandidatesCount: UInt32
+        public let processedCount: UInt32
+        public let archivedCount: UInt32
+        public let lastReportPath: String?
+
+        // PR 50a contract: schemaVersion === 1 is locked. Any change to
+        // field names, types, or removal requires a schemaVersion bump
+        // AND a coordinated Rust + frontend change (per strict-acceptance
+        // rule). Additive (new optional fields) does NOT bump.
+        public static let currentSchemaVersion: UInt32 = 1
+
+        public init(
+            schemaVersion: UInt32 = StatusReport.currentSchemaVersion,
+            vaultPath: String,
+            rawCandidatesCount: UInt32,
+            processedCount: UInt32,
+            archivedCount: UInt32,
+            lastReportPath: String?
+        ) {
+            self.schemaVersion = schemaVersion
+            self.vaultPath = vaultPath
+            self.rawCandidatesCount = rawCandidatesCount
+            self.processedCount = processedCount
+            self.archivedCount = archivedCount
+            self.lastReportPath = lastReportPath
+        }
+
+        // PR 50a: Swift's default JSONEncoder SKIPS nil-valued Optional
+        // fields (e.g. lastReportPath when no reports exist), which
+        // would silently drift the wire format from the locked
+        // contract. We override encode(to:) to always emit the
+        // lastReportPath key — either as a string or as explicit
+        // JSON null — so the consumer (Rust) sees a stable schema.
+        // The decode side uses JSONDecoder's default null → nil
+        // handling, which is the inverse of encodeNil and the
+        // behavior the Rust side expects.
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(schemaVersion, forKey: .schemaVersion)
+            try container.encode(vaultPath, forKey: .vaultPath)
+            try container.encode(rawCandidatesCount, forKey: .rawCandidatesCount)
+            try container.encode(processedCount, forKey: .processedCount)
+            try container.encode(archivedCount, forKey: .archivedCount)
+            if let path = lastReportPath {
+                try container.encode(path, forKey: .lastReportPath)
+            } else {
+                try container.encodeNil(forKey: .lastReportPath)
+            }
+        }
+    }
+
+    /// Pure data builder for `StatusReport`. Reads the vault directory
+    /// (raw candidates, ledger, recent reports) and assembles a typed
+    /// struct that the JSON output path can serialize.
+    ///
+    /// Safe to call on a fresh vault (no `.dream/` directory) — returns
+    /// all-zero counts and `lastReportPath = nil`.
+    public static func buildStatusReport(vault: URL) -> StatusReport {
+        let fm = FileManager.default
+
+        // raw/ 候选数 = frontmatter 标 processed:false 且不在 processed.json
+        let rawDir = vault.appendingPathComponent("raw")
+        let rawCandidatesCount: UInt32
+        if fm.fileExists(atPath: rawDir.path) {
+            let processed = Gatherer.loadProcessedRegistry(vaultRoot: vault)
+            let files = (try? fm.contentsOfDirectory(at: rawDir, includingPropertiesForKeys: nil)) ?? []
+            let candidates = files.filter { f in
+                let rel = "raw/\(f.lastPathComponent)"
+                if processed.contains(rel) { return false }
+                // P0 致命修复 (缺陷报告 §1.3): 用 FrontmatterScanner 流式扫, 避免 String(contentsOf:) 全文读到内存
+                // 5MB 笔记 UI 假死. 老实现 O(file size) → 新实现 O(frontmatter 行数)
+                return FrontmatterScanner.hasProcessedFalse(f)
+            }
+            rawCandidatesCount = UInt32(candidates.count)
+        } else {
+            rawCandidatesCount = 0
+        }
+
+        // ledger: durable (= "processed") and archived
+        let ledger = Persister.loadLedger(vaultRoot: vault)
+        let durable = ledger.memories.filter { $0.status == .durable }.count
+        let archived = ledger.memories.filter { $0.status == .archived }.count
+
+        // 最近一次 dream-report — path is RELATIVE to vault root
+        // (design note §1.4 rule 3). Cross-vault moves, syncs, and
+        // test fixtures stay portable when the path is relative.
+        let reportsDir = vault.appendingPathComponent(".dream/reports")
+        let key: URLResourceKey = .creationDateKey
+        let lastReportPath: String?
+        if let last = ((try? fm.contentsOfDirectory(at: reportsDir, includingPropertiesForKeys: [key])) ?? [])
+            .sorted(by: { (try? $0.resourceValues(forKeys: [key]).creationDate) ?? .distantPast
+                       > (try? $1.resourceValues(forKeys: [key]).creationDate) ?? .distantPast })
+            .first {
+            // Strip the vault prefix to get the vault-relative path.
+            // We use pathComponents (not string prefix match) because
+            // macOS /var/ is a symlink to /private/var/, and Foundation
+            // may return the resolved form for contentsOfDirectory
+            // URLs while preserving the unresolved form for the
+            // vault URL — string prefix match would fail. pathComponents
+            // works regardless of the symlink resolution.
+            let vaultComponents = vault.standardizedFileURL.pathComponents
+            let lastComponents = last.standardizedFileURL.pathComponents
+            if lastComponents.count > vaultComponents.count,
+               Array(lastComponents[0..<vaultComponents.count]) == vaultComponents {
+                let relativeComponents = Array(lastComponents[vaultComponents.count...])
+                lastReportPath = relativeComponents.joined(separator: "/")
+            } else {
+                // Different roots (shouldn't happen — we're walking
+                // vault-relative). Fall back to absolute path so the
+                // JSON is at least self-describing.
+                lastReportPath = last.path
+            }
+        } else {
+            lastReportPath = nil
+        }
+
+        return StatusReport(
+            vaultPath: vault.path,
+            rawCandidatesCount: rawCandidatesCount,
+            processedCount: UInt32(durable),
+            archivedCount: UInt32(archived),
+            lastReportPath: lastReportPath
+        )
     }
 
     // MARK: - dream rollback
