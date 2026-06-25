@@ -225,6 +225,16 @@ struct DreamCLI {
                        > (try? $1.resourceValues(forKeys: [key]).creationDate) ?? .distantPast })
             .first {
             print("最近 dream-report: \(last.path)")
+            // PR 51a (v0.6.x, dreamforge side): emit `Last dream: <ISO-8601 UTC>`
+            // alongside the report path so dreamforge's PR 48 `parseDreamStatus`
+            // can derive `lastDreamAt` for the empty-state health badge (PR 49).
+            // Format: ISO-8601 with `Z` suffix (UTC). Matches the format the
+            // frontend regex expects (see src/lib/dreamCliStatus.ts:84).
+            if let creation = try? last.resourceValues(forKeys: [key]).creationDate {
+                let f = ISO8601DateFormatter()
+                f.formatOptions = [.withInternetDateTime]
+                print("Last dream: \(f.string(from: creation))")
+            }
         }
         return 0
     }
